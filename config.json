@@ -1,18 +1,17 @@
 {
   "name": "ScriptTask",
   "shortName": "scripttask",
-  "version": "0.1.3",
+  "version": "1.0.0",
   "author": "Desmond Duval (based on ScriptTask by Ryan Blenis)",
   "description": "Script (PowerShell, BAT, Bash) runner for endpoints",
   "hasAdminPanel": true,
-  "homepage": "https://github.com/dduval-sgo/MeshCentral-ScriptTask",
-  "changelogUrl": "https://raw.githubusercontent.com/dduval-sgo/MeshCentral-ScriptTask/master/changelog.md",
-  "configUrl": "https://raw.githubusercontent.com/dduval-sgo/MeshCentral-ScriptTask/master/config.json",
-  "downloadUrl": "https://github.com/dduval-sgo/MeshCentral-ScriptTask/archive/master.zip",
+  "homepage": "https://github.com/Tech-Werkz/ScriptTask",
+  "changelogUrl": "https://raw.githubusercontent.com/Tech-Werkz/ScriptTask/master/changelog.md",
+  "configUrl": "https://raw.githubusercontent.com/Tech-Werkz/ScriptTask/master/config.json",
+  "downloadUrl": "https://github.com/Tech-Werkz/ScriptTask/archive/master.zip",
   "repository": {
     "type": "git",
-    "url": "https://github.com/dduval-sgo/MeshCentral-ScriptTask.git"
+    "url": "https://github.com/Tech-Werkz/ScriptTask.git"
   },
-  "versionHistoryUrl": "https://api.github.com/repos/dduval-sgo/MeshCentral-ScriptTask/tags",
   "meshCentralCompat": ">=1.2.0"
 }
