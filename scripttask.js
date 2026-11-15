@@ -3,6 +3,7 @@
 * @author Ryan Blenis
 * @author Desmond Duval (modifications)
 * Modified by Desmond Duval, 2026: redesigned interface, scheduling engine, batches, permissions and settings. See changelog.md.
+* Permissions: every permission defaults to denied, and is checked through MeshCentral's getAccessPermissions (see the Permissions section).
 * @copyright
 * @license Apache-2.0
 */
@@ -56,7 +57,7 @@ module.exports.scripttask = function (parent) {
     const FILE_TYPES = ['ps1', 'bat', 'bash'];
 
     // Plugin permissions, managed in MeshCentral's plugin permissions dialog (MeshCentral 1.1.58+).
-    // Full site administrators always pass every check.
+    // Every permission defaults to 'denied': nobody can use the plugin until an administrator grants a permission.
     obj.permissions = {
         manage: {
             title: 'Manage ScriptTask',
@@ -66,7 +67,7 @@ module.exports.scripttask = function (parent) {
         run: {
             title: 'Run scripts',
             desc: 'Run and schedule library scripts on a device from its ScriptTask tab, and view that device\'s queue and history. Also requires the device\'s Remote Commands right.',
-            default: 'allowed'
+            default: 'denied'
         }
     };
 
@@ -98,7 +99,8 @@ module.exports.scripttask = function (parent) {
 
     obj.server_startup = function() {
         // Registered here, not at load: MeshCentral loads plugins before its permission functions exist
-        if (typeof parent.registerPermissions == 'function') parent.registerPermissions('scripttask', obj.permissions);
+        if (!obj.registerPermissions()) console.log('PLUGIN: ScriptTask: no plugin permission API (registerPermissions); limited to full administrators');
+        else console.log('PLUGIN: ScriptTask: plugin permissions registered; ' + obj.describePermissionApi());
         obj.meshServer.pluginHandler.scripttask_db = require (__dirname + '/db.js').CreateDB(obj.meshServer);
         obj.db = obj.meshServer.pluginHandler.scripttask_db;
         obj.resetQueueTimer();
@@ -259,7 +261,12 @@ module.exports.scripttask = function (parent) {
     // ---- HTTP ----
 
     obj.downloadFile = function(req, res, user) {
-        if (!obj.hasPerm(user, 'manage')) { res.sendStatus(401); return; }
+        obj.hasPerm(user, 'manage').then(function(ok) {
+            if (!ok) { res.sendStatus(401); return; }
+            obj._downloadFile(req, res, user);
+        }).catch(function() { if (!res.headersSent) res.sendStatus(401); });
+    };
+    obj._downloadFile = function(req, res, user) {
         var id = req.query.dl;
         obj.db.get(id)
         .then(found => {
@@ -285,8 +292,10 @@ module.exports.scripttask = function (parent) {
             return;
         }
         // The ScriptTask page, opened from My Server > Plugins (MeshCentral's goPlugin sends no other parameters)
-        if (!obj.hasPerm(user, 'manage')) { res.status(403).send('The ScriptTask page is for ScriptTask managers.'); return; }
-        res.render(obj.VIEWS + 'server', { version: obj.version });
+        obj.hasPerm(user, 'manage').then(function(ok) {
+            if (!ok) { res.status(403).send('The ScriptTask page is for ScriptTask managers.'); return; }
+            res.render(obj.VIEWS + 'server', { version: obj.version });
+        }).catch(function() { if (!res.headersSent) res.status(403).send('The ScriptTask page is for ScriptTask managers.'); });
     };
 
     // ---- Scheduling ----
@@ -421,17 +430,97 @@ module.exports.scripttask = function (parent) {
     // ---- Permissions ----
 
     obj.isFullAdmin = function(user) {
-        return user != null && user.siteadmin === SITERIGHT_FULLADMIN;
+        return user != null && (user.siteadmin >>> 0) === SITERIGHT_FULLADMIN;
     };
-    obj.hasPerm = function(user, perm, nodeId, meshId) {
-        if (user == null) return false;
-        if (obj.isFullAdmin(user)) return true;
-        // MeshCentral allows everything for a plugin with no registered permissions. Fail closed instead,
-        // using our own defaults, if registration hasn't happened.
-        if (typeof parent.checkPluginPermission != 'function' || typeof parent.getPluginPermissions != 'function' || parent.getPluginPermissions('scripttask') == null) {
-            return obj.permissions[perm] != null && obj.permissions[perm].default == 'allowed';
+
+    // The plugin handler is `parent`. Where MeshCentral keeps the permission functions can differ between versions.
+    obj.permissionHosts = function() { return [obj.parent, obj.meshServer && obj.meshServer.pluginHandler]; };
+
+    obj.registerPermissions = function() {
+        if (obj._permsRegistered) return true;
+        var hosts = obj.permissionHosts();
+        for (var i = 0; i < hosts.length; i++) {
+            if (hosts[i] != null && typeof hosts[i].registerPermissions == 'function') {
+                try { hosts[i].registerPermissions('scripttask', obj.permissions); obj._permsRegistered = true; return true; }
+                catch (e) { console.log('PLUGIN: ScriptTask: could not register plugin permissions: ' + (e.message || e)); }
+            }
         }
-        return parent.checkPluginPermission(user, 'scripttask', perm, nodeId, meshId) === true;
+        return false;
+    };
+
+    // Starts the permission lookup. Returns a Promise, or null when this MeshCentral has no permission API.
+    // The call shape is detected, not assumed: on MeshCentral 1.3.1 the plugin name comes first.
+    obj.permissionCall = function(user, ctx) {
+        if (typeof obj.getAccessPermissions == 'function') {
+            obj._permMode = 'plugin object: getAccessPermissions(user, context)';
+            return Promise.resolve(obj.getAccessPermissions(user, ctx));
+        }
+        var hosts = obj.permissionHosts();
+        for (var i = 0; i < hosts.length; i++) {
+            var host = hosts[i];
+            if (host == null || typeof host.getAccessPermissions != 'function') continue;
+            var src = ''; try { src = Function.prototype.toString.call(host.getAccessPermissions); } catch (e) { }
+            var m = src.match(/^[^(]*\(\s*([A-Za-z_$][\w$]*)/);
+            var takesName = (m != null) && /^(plugin|pluginname|plugin_name|pluginid|shortname|name|id)$/i.test(m[1]);
+            obj._permMode = takesName ? 'plugin handler: getAccessPermissions(pluginName, user, context)' : 'plugin handler: getAccessPermissions(user, context)';
+            return Promise.resolve(takesName ? host.getAccessPermissions('scripttask', user, ctx) : host.getAccessPermissions(user, ctx));
+        }
+        return null;
+    };
+
+    obj.describePermissionApi = function() {
+        if (typeof obj.getAccessPermissions == 'function') return 'getAccessPermissions on the plugin object';
+        var hosts = obj.permissionHosts();
+        for (var i = 0; i < hosts.length; i++) {
+            if (hosts[i] != null && typeof hosts[i].getAccessPermissions == 'function') {
+                var src = ''; try { src = Function.prototype.toString.call(hosts[i].getAccessPermissions).split('\n')[0].substring(0, 120); } catch (e) { }
+                return 'getAccessPermissions on the plugin handler: ' + src;
+            }
+        }
+        return 'no getAccessPermissions found';
+    };
+
+    // One log line per user, permission and device per minute (grants: per five minutes)
+    obj._decisionLogged = {};
+    obj.logDecision = function(granted, user, key, ctx, detail) {
+        try {
+            var k = (granted ? 'g|' : 'd|') + (user && user._id) + '|' + key + '|' + (ctx && ctx.nodeid), now = Date.now();
+            if (obj._decisionLogged[k] != null && (now - obj._decisionLogged[k]) < (granted ? 300000 : 60000)) return;
+            obj._decisionLogged[k] = now;
+            console.log('PLUGIN: ScriptTask: permission "' + key + '" ' + (granted ? 'granted to ' : 'refused for ') + (user && (user.name || user._id)) +
+                ' (siteadmin=' + (user && user.siteadmin) + ') on ' + ((ctx && (ctx.nodeid || ctx.meshid)) || 'global') + ' - ' + detail + ' [' + (obj._permMode || 'no API') + ']');
+        } catch (e) { }
+    };
+
+    // Resolves true or false. Fails closed: an error, a missing API or an unexpected answer means false.
+    // Full administrators are not assumed to pass; the log line shows siteadmin with each decision.
+    obj.canUse = function(user, key, ctx) {
+        try {
+            if (user == null || obj.permissions[key] == null) return Promise.resolve(false);
+            ctx = ctx || {};
+            var call = obj._permsRegistered ? obj.permissionCall(user, ctx) : null;
+            if (call == null) {
+                // No permission API, or our permissions never registered (MeshCentral allows everything for an unregistered plugin)
+                var admin = obj.isFullAdmin(user);
+                obj.logDecision(admin, user, key, ctx, obj._permsRegistered ? 'no plugin permission API; only full administrators are allowed' : 'permissions are not registered; only full administrators are allowed');
+                return Promise.resolve(admin);
+            }
+            return call.then(function(has) {
+                var allowed = false, what;
+                if (typeof has == 'function') { var r = has(key); allowed = (r === true); what = 'the permission check returned ' + String(r); }
+                else if (has != null && typeof has == 'object') { var r2 = has[key]; allowed = (r2 === true); what = 'the permission object has ' + key + ' = ' + String(r2); }
+                else what = 'getAccessPermissions returned ' + String(has);
+                obj.logDecision(allowed, user, key, ctx, what);
+                return allowed;
+            }).catch(function(e) { obj.logDecision(false, user, key, ctx, 'permission check threw: ' + ((e && e.message) || e)); return false; });
+        } catch (e) {
+            obj.logDecision(false, user, key, ctx, 'permission check threw: ' + ((e && e.message) || e));
+            return Promise.resolve(false);
+        }
+    };
+    // Resolves true or false (it is asynchronous: always await it)
+    obj.hasPerm = function(user, perm, nodeId, meshId) {
+        return obj.canUse(user, perm, { nodeid: nodeId, meshid: meshId });
     };
     // Resolve what a user may do on one device: the plugin's "run" permission plus the device's Remote Commands right,
     // which is what MeshCentral itself requires to run commands on a device.
@@ -440,12 +529,13 @@ module.exports.scripttask = function (parent) {
             obj.meshServer.webserver.GetNodeWithRights(session.domain, session.user, nodeId, function(node, rights, visible) {
                 if (node == null || !visible) { resolve({ node: null, run: false }); return; }
                 var remoteCommand = (rights & MESHRIGHT_REMOTECOMMAND) != 0;
-                resolve({ node: node, remoteCommand: remoteCommand, run: remoteCommand && obj.hasPerm(session.user, 'run', node._id, node.meshid) });
+                if (!remoteCommand) { resolve({ node: node, remoteCommand: false, run: false }); return; }
+                obj.hasPerm(session.user, 'run', node._id, node.meshid).then(function(ok) { resolve({ node: node, remoteCommand: true, run: ok === true }); });
             });
         });
     };
-    obj.requireManage = function(session) {
-        if (!obj.hasPerm(session.user, 'manage')) throw new RpcError('Only ScriptTask managers can do this.');
+    obj.requireManage = async function(session) {
+        if (!(await obj.hasPerm(session.user, 'manage'))) throw new RpcError('Only ScriptTask managers can do this.');
     };
     obj.requireNode = async function(session, nodeId) {
         if (typeof nodeId != 'string') throw new RpcError('No device given.');
@@ -454,8 +544,8 @@ module.exports.scripttask = function (parent) {
         return caps.node;
     };
     // Users may change jobs and schedules they created. Managers may change any.
-    obj.requireOwnerOrManage = function(session, ownerId) {
-        if (obj.hasPerm(session.user, 'manage')) return;
+    obj.requireOwnerOrManage = async function(session, ownerId) {
+        if (await obj.hasPerm(session.user, 'manage')) return;
         if (ownerId == null || ownerId != session.user._id) throw new RpcError('You can only change jobs and schedules you created.');
     };
 
@@ -525,14 +615,17 @@ module.exports.scripttask = function (parent) {
         return {
             version: obj.version,
             user: { id: session.user._id, name: session.user.name },
-            caps: { manage: obj.hasPerm(session.user, 'manage'), run: caps.run, remoteCommand: caps.remoteCommand === true, visible: caps.node != null },
+            caps: { manage: await obj.hasPerm(session.user, 'manage'), run: caps.run, remoteCommand: caps.remoteCommand === true, visible: caps.node != null },
             node: (caps.node == null) ? null : { id: caps.node._id, online: obj.meshServer.webserver.wsagents[caps.node._id] != null },
             settings: await obj.getSettings()
         };
     };
 
-    obj.rpc.tree = function(args, session) {
-        if (!obj.hasPerm(session.user, 'run') && !obj.hasPerm(session.user, 'manage')) throw new RpcError('No access.');
+    // The script tree. With a device given, the "run" permission is resolved for that device, so a grant made
+    // on one device or device group works. Without one, only a global "run" or "manage" permission passes.
+    obj.rpc.tree = async function(args, session) {
+        if (args.nodeId != null) await obj.requireNode(session, args.nodeId);
+        else if (!(await obj.hasPerm(session.user, 'run')) && !(await obj.hasPerm(session.user, 'manage'))) throw new RpcError('No access.');
         return obj.db.getScriptTree();
     };
 
@@ -550,11 +643,11 @@ module.exports.scripttask = function (parent) {
         var script = await getOne(args.scriptId, 'script');
         var nodeIds = Array.isArray(args.nodeIds) ? args.nodeIds.map(id) : [];
         if (nodeIds.length == 0) throw new RpcError('No device given.');
-        if (nodeIds.length > 1) obj.requireManage(session);
+        if (nodeIds.length > 1) await obj.requireManage(session);
         var allowed = await obj.allowedTargets(session, nodeIds), batchId = null;
         if (args.batchId != null) {
             // Running again on some of a batch's devices: the new runs join that batch, replacing those devices' results
-            obj.requireManage(session);
+            await obj.requireManage(session);
             var batch = await obj.db.getBatch(String(args.batchId));
             if (batch == null || batch.recurring || String(batch.scriptId) != String(script._id)) throw new RpcError('That batch can\'t be run again.');
             batchId = batch.batchId;
@@ -579,7 +672,7 @@ module.exports.scripttask = function (parent) {
         var sched = cleanSchedule(args.schedule);
         var nodeIds = Array.isArray(args.nodeIds) ? args.nodeIds.map(id) : [];
         if (nodeIds.length == 0) throw new RpcError('No device given.');
-        if (nodeIds.length > 1) obj.requireManage(session);
+        if (nodeIds.length > 1) await obj.requireManage(session);
         var allowed = await obj.allowedTargets(session, nodeIds);
         var batchId = (allowed.accepted.length > 1) ? await obj.startBatch(session, script, allowed.accepted, args.name, true, sched) : null;
         for (var nodeId of allowed.accepted) {
@@ -606,14 +699,14 @@ module.exports.scripttask = function (parent) {
     obj.rpc.cancelJob = async function(args, session) {
         var job = await getOne(args.jobId, 'job');
         await obj.requireNode(session, job.node);
-        obj.requireOwnerOrManage(session, job.runById);
+        await obj.requireOwnerOrManage(session, job.runById);
         if (job.completeTime != null) throw new RpcError('This job has already finished.');
         await obj.cancelJobDoc(job, session.user.name);
         return true;
     };
 
     obj.rpc.cancelAllPending = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         var node = await obj.requireNode(session, args.nodeId);
         var jobs = await obj.db.getIncompleteJobsForNode(node._id), schedules = [];
         for (var job of jobs) {
@@ -635,7 +728,7 @@ module.exports.scripttask = function (parent) {
     obj.rpc.deleteSchedule = async function(args, session) {
         var sched = await getOne(args.scheduleId, 'jobSchedule');
         await obj.requireNode(session, sched.node);
-        obj.requireOwnerOrManage(session, sched.scheduledById);
+        await obj.requireOwnerOrManage(session, sched.scheduledById);
         await obj.deleteScheduleDoc(sched);
         return true;
     };
@@ -643,7 +736,7 @@ module.exports.scripttask = function (parent) {
     obj.rpc.updateSchedule = async function(args, session) {
         var existing = await getOne(args.scheduleId, 'jobSchedule');
         await obj.requireNode(session, existing.node);
-        obj.requireOwnerOrManage(session, existing.scheduledById);
+        await obj.requireOwnerOrManage(session, existing.scheduledById);
         var sched = cleanSchedule(args.schedule);
         await obj.db.deleteUndispatchedJobsForSchedule(existing._id);
         // Start afresh from now: no run for a slot that has already passed
@@ -668,7 +761,7 @@ module.exports.scripttask = function (parent) {
     obj.rpc.pauseSchedule = async function(args, session) {
         var existing = await getOne(args.scheduleId, 'jobSchedule');
         await obj.requireNode(session, existing.node);
-        obj.requireOwnerOrManage(session, existing.scheduledById);
+        await obj.requireOwnerOrManage(session, existing.scheduledById);
         await obj.pauseScheduleDoc(existing, args.paused === true);
         return true;
     };
@@ -735,7 +828,7 @@ module.exports.scripttask = function (parent) {
     }
 
     obj.rpc.queue = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         await obj.getSettings();
         var filters = cleanFilters(args.filters), p = page(args), now = Math.floor(Date.now() / 1000);
         var visible = await obj.visibleNodes(session);
@@ -760,7 +853,7 @@ module.exports.scripttask = function (parent) {
     };
 
     obj.rpc.schedules = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         var filters = cleanFilters(args.filters), p = page(args);
         var visible = await obj.visibleNodes(session);
         var nodes = new Set(nodeScope(filters, visible));
@@ -780,7 +873,7 @@ module.exports.scripttask = function (parent) {
     };
 
     obj.rpc.history = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         var filters = cleanFilters(args.filters), p = page(args);
         var visible = await obj.visibleNodes(session);
         var find = jobQuery(nodeScope(filters, visible), { $gt: 0 }), and = find.$and;
@@ -811,13 +904,13 @@ module.exports.scripttask = function (parent) {
     // One job in full (for the output viewer): managers for devices they can see, or users who can run scripts on its device
     obj.rpc.job = async function(args, session) {
         var job = await getOne(args.id, 'job');
-        if (obj.hasPerm(session.user, 'manage') && (await obj.visibleNodes(session)).has(job.node)) return job;
+        if ((await obj.hasPerm(session.user, 'manage')) && (await obj.visibleNodes(session)).has(job.node)) return job;
         await obj.requireNode(session, job.node);
         return job;
     };
 
     obj.rpc.cancelJobs = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         var visible = await obj.visibleNodes(session), done = 0, skipped = 0;
         for (var id of (Array.isArray(args.jobIds) ? args.jobIds : []).slice(0, 1000)) {
             var found = await obj.db.get(String(id));
@@ -831,7 +924,7 @@ module.exports.scripttask = function (parent) {
 
     // Start queued or scheduled runs now instead of at their due time. Runs already sent are left alone.
     obj.rpc.runJobsNow = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         var visible = await obj.visibleNodes(session), done = 0, skipped = 0, now = Math.floor(Date.now() / 1000), nodes = [];
         for (var id of (Array.isArray(args.jobIds) ? args.jobIds : []).slice(0, 1000)) {
             var found = await obj.db.get(String(id));
@@ -848,7 +941,7 @@ module.exports.scripttask = function (parent) {
     };
 
     obj.rpc.scheduleAction = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         if (['pause', 'resume', 'delete'].indexOf(args.action) === -1) throw new RpcError('Unknown action.');
         var visible = await obj.visibleNodes(session), done = 0, skipped = 0;
         for (var id of (Array.isArray(args.scheduleIds) ? args.scheduleIds : []).slice(0, 1000)) {
@@ -865,7 +958,7 @@ module.exports.scripttask = function (parent) {
     // -- Settings (managers) --
 
     obj.rpc.saveSettings = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         // Fields left out keep their current values
         var before = await obj.getSettings();
         args = Object.assign({}, before, args);
@@ -954,7 +1047,7 @@ module.exports.scripttask = function (parent) {
     }
 
     obj.rpc.batches = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         await obj.getSettings();
         var p = page(args), now = Math.floor(Date.now() / 1000);
         var results = await Promise.all([obj.db.countBatches(), obj.db.getBatches(p.skip, p.limit)]);
@@ -973,7 +1066,7 @@ module.exports.scripttask = function (parent) {
 
     // One batch's results: devices grouped by identical output, and a row per device
     obj.rpc.batch = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         await obj.getSettings();
         var batch = await obj.db.getBatch(String(args.batchId || ''));
         if (batch == null) throw new RpcError('Batch not found.');
@@ -1004,19 +1097,19 @@ module.exports.scripttask = function (parent) {
             missing: batch.nodeIds.filter(function(n) { return visible.has(n) && latest[n] == null; }) };
     };
 
-    obj.rpc.targetSets = function(args, session) {
-        obj.requireManage(session);
+    obj.rpc.targetSets = async function(args, session) {
+        await obj.requireManage(session);
         return obj.db.getTargetSets(session.user._id);
     };
     obj.rpc.saveTargetSet = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         var nodeIds = Array.isArray(args.nodeIds) ? args.nodeIds.filter(function(n) { return typeof n == 'string'; }).slice(0, 5000) : [];
         if (nodeIds.length == 0) throw new RpcError('Select some devices first.');
         await obj.db.saveTargetSet(session.user._id, str(args.name, 80), nodeIds);
         return obj.db.getTargetSets(session.user._id);
     };
     obj.rpc.deleteTargetSet = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         var set = await getOne(args.id, 'targetSet');
         if (set.ownerId != session.user._id) throw new RpcError('Not found. It may have been deleted.');
         await obj.db.delete(set._id);
@@ -1025,20 +1118,20 @@ module.exports.scripttask = function (parent) {
 
     // -- Library (managers) --
 
-    obj.rpc.getScript = function(args, session) {
-        obj.requireManage(session);
+    obj.rpc.getScript = async function(args, session) {
+        await obj.requireManage(session);
         return getOne(args.id, 'script');
     };
 
     obj.rpc.scriptData = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         var script = await getOne(args.scriptId, 'script');
         var results = await Promise.all([obj.db.getJobScriptHistory(script._id), obj.db.getJobSchedulesForScript(script._id)]);
         return { history: results[0], schedules: results[1] };
     };
 
     obj.rpc.addScript = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         if (FILE_TYPES.indexOf(args.filetype) === -1) throw new RpcError('Scripts must be PowerShell (.ps1), Batch (.bat) or Bash.');
         if (typeof args.content != 'string' || args.content.length > 4 * 1024 * 1024) throw new RpcError('Script content is missing or larger than 4 MB.');
         var path = await folderPath(args.folderId);
@@ -1048,7 +1141,7 @@ module.exports.scripttask = function (parent) {
     };
 
     obj.rpc.saveScript = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         var script = await getOne(args.id, 'script');
         var filetype = (args.filetype != null) ? args.filetype : script.filetype;
         if (FILE_TYPES.indexOf(filetype) === -1) throw new RpcError('Unknown script type.');
@@ -1061,7 +1154,7 @@ module.exports.scripttask = function (parent) {
     };
 
     obj.rpc.newFolder = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         var parentPath = await folderPath(args.parentId);
         var folderName = name(args.name);
         await obj.db.addFolder(folderName, parentPath + '/' + folderName);
@@ -1070,7 +1163,7 @@ module.exports.scripttask = function (parent) {
     };
 
     obj.rpc.rename = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         var item = await getOne(args.id);
         var newName = name(args.name);
         if (item.type == 'folder') {
@@ -1086,7 +1179,7 @@ module.exports.scripttask = function (parent) {
     };
 
     obj.rpc.move = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         var item = await getOne(args.id);
         var target = await getOne(args.toId, 'folder');
         if (item.type == 'folder') {
@@ -1101,7 +1194,7 @@ module.exports.scripttask = function (parent) {
     };
 
     obj.rpc.deleteItem = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         var item = await getOne(args.id);
         var scripts = [];
         if (item.type == 'folder') {
@@ -1155,7 +1248,7 @@ module.exports.scripttask = function (parent) {
     }
 
     obj.rpc.variables = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         var vars = await obj.db.getVariables(), out = [], nodeSeen = {};
         for (var v of vars) {
             if (v.scope == 'mesh' && !obj.canSeeMesh(session, v.scopeTarget)) continue;
@@ -1169,14 +1262,14 @@ module.exports.scripttask = function (parent) {
         return out;
     };
     obj.rpc.revealVar = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         var v = await getOne(args.id, 'variable');
         await checkVarTarget(session, v);
         return v.value;
     };
     // Which library scripts use each variable name, as #name#
     obj.rpc.varUsage = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         var usage = {}, re = /#([A-Za-z0-9_:.\-]+)#/g, m;
         (await obj.db.getScriptContents()).forEach(function(sc) {
             var seen = {};
@@ -1190,7 +1283,7 @@ module.exports.scripttask = function (parent) {
         return usage;
     };
     obj.rpc.addVar = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         var v = cleanVar(args);
         await checkVarTarget(session, v, true);
         var r = await obj.db.addVariable(v.name, v.scope, v.scopeTarget, v.value || '');
@@ -1199,7 +1292,7 @@ module.exports.scripttask = function (parent) {
         return true;
     };
     obj.rpc.editVar = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         var existing = await getOne(args.id, 'variable');
         await checkVarTarget(session, existing);
         var v = cleanVar(args);
@@ -1210,7 +1303,7 @@ module.exports.scripttask = function (parent) {
         return true;
     };
     obj.rpc.deleteVar = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         var existing = await getOne(args.id, 'variable');
         await checkVarTarget(session, existing);
         await obj.db.delete(existing._id);
@@ -1221,7 +1314,7 @@ module.exports.scripttask = function (parent) {
     // -- Overview (managers) --
 
     obj.rpc.overview = async function(args, session) {
-        obj.requireManage(session);
+        await obj.requireManage(session);
         var settings = await obj.getSettings();
         var now = Math.floor(Date.now() / 1000), since = now - 86400;
         var visible = await obj.visibleNodes(session), nodes = Array.from(visible);
@@ -1257,6 +1350,23 @@ module.exports.scripttask = function (parent) {
         };
     };
 
+    // Who may call each request. 'manage': checked here, before the handler runs. 'node': the handler resolves the
+    // device and checks the "run" permission, the device's Remote Commands right and ownership. 'open': answers only
+    // what the caller may do. A request that is not listed here is refused, so a new one can't go live ungated.
+    obj.RPC_ACCESS = {
+        init: 'open',
+        tree: 'node', nodeData: 'node', runScript: 'node', addSchedule: 'node', cancelJob: 'node', deleteSchedule: 'node', updateSchedule: 'node', pauseSchedule: 'node', job: 'node',
+        cancelAllPending: 'manage', queue: 'manage', schedules: 'manage', history: 'manage', cancelJobs: 'manage', runJobsNow: 'manage', scheduleAction: 'manage', saveSettings: 'manage',
+        batches: 'manage', batch: 'manage', targetSets: 'manage', saveTargetSet: 'manage', deleteTargetSet: 'manage',
+        getScript: 'manage', scriptData: 'manage', addScript: 'manage', saveScript: 'manage', newFolder: 'manage', rename: 'manage', move: 'manage', deleteItem: 'manage',
+        variables: 'manage', revealVar: 'manage', varUsage: 'manage', addVar: 'manage', editVar: 'manage', deleteVar: 'manage', overview: 'manage'
+    };
+    obj.gateRpc = async function(method, session) {
+        var level = Object.prototype.hasOwnProperty.call(obj.RPC_ACCESS, method) ? obj.RPC_ACCESS[method] : null;
+        if (level == null) throw new RpcError('Unknown request.');
+        if (level == 'manage') await obj.requireManage(session);
+    };
+
     obj.handleRpc = function(command, session) {
         var reply = function(ok, data) {
             session.send({ action: 'plugin', plugin: 'scripttask', method: 'onRpcResult', reqId: command.reqId, ok: ok, data: ok ? data : undefined, error: ok ? undefined : data });
@@ -1264,6 +1374,7 @@ module.exports.scripttask = function (parent) {
         if (typeof command.method != 'string' || !Object.prototype.hasOwnProperty.call(obj.rpc, command.method)) { reply(false, 'Unknown request.'); return; }
         var args = (command.args != null && typeof command.args == 'object') ? command.args : {};
         Promise.resolve()
+        .then(function() { return obj.gateRpc(command.method, session); })
         .then(function() { return obj.rpc[command.method](args, session); })
         .then(function(data) { reply(true, data); })
         .catch(function(e) {

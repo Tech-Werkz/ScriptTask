@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues) if you find anything.
 
+## [1.1.0] - 2026-11-15
+### Changed (read before upgrading)
+- **Every permission now defaults to denied, so after this update nobody can use ScriptTask until an administrator grants a permission.** "Run scripts" used to be allowed by default; it is now denied like "Manage ScriptTask". Existing users, including everyone who could run scripts before, must be granted access in MeshCentral's plugin permissions dialog (global, device group or device) before the ScriptTask tab or page works for them. A grant on a device group or device overrides a global "denied".
+- Permissions are read through MeshCentral's `getAccessPermissions`. The call shape (plugin name first or not) is detected and logged at startup, and each decision is logged with the user, `siteadmin`, the permission, the device and what MeshCentral answered (refusals once a minute and grants once per five minutes, per user, permission and device).
+- Fails closed: an error, a missing or unexpected answer, or permissions that did not register all mean denied. Only when MeshCentral has no permission API at all, or our permissions did not register, are full administrators allowed (and only they). Full administrators are no longer assumed to pass: when the API is available, its answer decides, and the log shows `siteadmin` with it.
+- Every request from a browser is checked on the server before it runs. Requests that need "Manage ScriptTask" are refused in one place, and a request that is not in the plugin's access table is refused, so a new request can't be added without an access level.
+- The script list for a device is resolved for that device when the browser sends it (`tree` with `nodeId`), so a "Run scripts" grant made on one device or device group works there.
+
+### Added
+- Tests for permissions (`node --test test/permissions.test.js`), using a stubbed MeshCentral. They cover what the server code does; they do not prove MeshCentral's own behaviour. See the readme.
+
 ## [0.1.3] - 2026-10-26
 ### Added
 - Built-in variables `#GBL:nodeName#`, `#GBL:meshName#`, `#GBL:tags#`, `#GBL:os#`, `#GBL:scriptName#` and `#GBL:runTime#`. Device details are read from MeshCentral when the run is sent, only for scripts that use them. ([#9](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues/9))

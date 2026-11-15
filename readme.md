@@ -28,7 +28,7 @@ Then enable the plugin, and **restart MeshCentral**.
 
 **Restart MeshCentral after installing, upgrading or removing the plugin.** MeshCentral keeps a plugin's server code in memory until it restarts. Without a restart, a newly installed version can keep running the previous version's code: you'd see the old pages, or "Unauthorized" on the ScriptTask page. From version 0.1.1, ScriptTask notices a version change and loads its new code itself, but a restart is still the reliable way. After restarting, reload MeshCentral in your browser (Ctrl+F5).
 
-**Switching from the original plugin:** both use the plugin name `scripttask` and the same database (`plugin-scripttask.db` in `meshcentral-data` for NeDB, or the `plugin_scripttask` collection for MongoDB), so scripts, schedules, history and variables carry over. Back up your data first, remove the original plugin, install this one, then restart MeshCentral. The original plugin can't detect the change, so the restart is required here. Existing schedules keep working as before: they run when an offline device reconnects, on their original timetable.
+**Switching from the original plugin:** both use the plugin name `scripttask` and the same database (`plugin-scripttask.db` in `meshcentral-data` for NeDB, or the `plugin_scripttask` collection for MongoDB), so scripts, schedules, history and variables carry over. Back up your data first, remove the original plugin, install this one, then restart MeshCentral. Permissions are not carried over: the original plugin had none, so nobody can use this one until you grant a permission (see Permissions). The original plugin can't detect the change, so the restart is required here. Existing schedules keep working as before: they run when an offline device reconnects, on their original timetable.
 
 ## Where to find it
 
@@ -42,9 +42,24 @@ ScriptTask registers two MeshCentral plugin permissions:
 | Permission | Default | Allows |
 |---|---|---|
 | **Manage ScriptTask** | Denied | The ScriptTask page: editing the library and variables, running or scheduling on many devices, and server-wide queue, schedules, history and settings. |
-| **Run scripts** | Allowed | Running and scheduling library scripts on a single device from its tab, and seeing that device's queue and every past run on it. |
+| **Run scripts** | Denied | Running and scheduling library scripts on a single device from its tab, and seeing that device's queue and every past run on it. |
 
-Running a script on a device also needs that device's **Remote Commands** right. MeshCentral full administrators always have both permissions. Managers only see devices, runs and variables for devices they can see in MeshCentral.
+**Every permission is denied by default. After installing or upgrading, nobody can use ScriptTask until an administrator grants a permission** in MeshCentral's plugin permissions dialog (global, device group or device). This includes people who could run scripts before version 0.2.0. The most specific setting wins: device, then device group, then global, then the default (denied). "Inherited" falls through to the next level, so a global "inherited" means denied, and an "allowed" on a device group or device overrides it.
+
+Running a script on a device also needs that device's **Remote Commands** right, and the user must be able to see the device. ScriptTask does not assume that MeshCentral full administrators are always allowed: it uses MeshCentral's answer, and writes the user's `siteadmin` value next to each decision in the MeshCentral log so you can see which it is on your server. Only if MeshCentral has no plugin permission API at all (or ScriptTask's permissions could not be registered) are full administrators the only users allowed. Managers only see devices, runs and variables for devices they can see in MeshCentral.
+
+If a permission check fails for any reason (an error, a missing or unexpected answer), the user is refused.
+
+### What the permissions can and can't enforce
+
+- **Enforced on the server:** every request the ScriptTask pages send (library, variables, runs, schedules, history, settings, the script download) is checked on the server before it runs, so hiding or showing parts of the page is not what protects anything.
+- **The tab and page shell are still served.** The ScriptTask tab appears on every device and loads its page; without a permission that page has no data and its requests are refused. The page's own files (scripts and styles) are not secret.
+- **Change notices** (which device, script or setting changed, with no content) are still sent to users who can see the device, or to all signed-in users for library, variable and settings changes. They carry ids only.
+- **Outside ScriptTask:** anything a user can do directly with MeshCentral (its own Console and Run commands, terminal and file access on a device they have rights to) does not pass through this plugin and is controlled by MeshCentral's device rights, not by these permissions.
+- **Changes take effect on the next request.** A grant works without restarting MeshCentral, and a revoke stops the next request from that user. A page that is already open keeps showing what it loaded until it asks again.
+- On MeshCentral 1.3.1 with MySQL, a known MeshCentral problem (#8307, `getPluginPermissions is not a function`) can stop saved permissions from loading. If it appears in the console or `meshcentral-data/mesherrors.txt`, it is a MeshCentral bug that a plugin can't fix; ScriptTask then refuses everyone except full administrators.
+
+After upgrading, restart MeshCentral and reload the page with Ctrl+F5: a browser that cached the old client code has none of the new behaviour.
 
 Users can cancel their own pending runs and change or delete their own schedules. Managers can act on anyone's.
 
@@ -152,6 +167,8 @@ The plugin needs no build step to install. Front-end libraries are vendored in `
 ```sh
 cd tools/build-editor && npm install && npm run build
 ```
+
+The permission tests use stubs only and need no MeshCentral: `node --test test/permissions.test.js`.
 
 Server tests run against a stubbed MeshCentral and need the folder whose `node_modules` contains MeshCentral's NeDB:
 
