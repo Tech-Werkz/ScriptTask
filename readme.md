@@ -72,7 +72,7 @@ Users can cancel their own pending runs and change or delete their own schedules
 | **Run** | Pick a script and devices (search, device group, tag, OS, online status, saved device sets), then run now or schedule. |
 | **Batches** | Runs on several devices, with devices grouped by identical output, CSV export, and Run again on failed devices. |
 | **Queue** | Every pending run, with filters and bulk cancel or run now. |
-| **Schedules** | Every schedule, soonest first, with bulk pause, resume and delete. |
+| **Schedules** | Every schedule, soonest first, with bulk edit, pause, resume and delete. Select schedules and choose Edit to give them all one new timetable. |
 | **History** | Every finished run, searchable by output, with the full output on click. |
 | **Variables** | All variables in one place, where each is used, and names scripts use that aren't defined. |
 | **Settings** | Plugin-wide settings (below) and your code editor theme. |
@@ -99,7 +99,7 @@ On the device tab, `/` focuses the script picker.
 
 ## Scheduling
 
-Schedules run once, or every N minutes, hours, days or weeks (on chosen weekdays), optionally until an end date. Daily and weekly schedules keep their wall-clock time in the time zone they were created in, across daylight-saving changes.
+Schedules run once, or every N minutes, hours, days or weeks (on chosen weekdays), optionally until an end date. A schedule on several devices is a scheduled batch with one schedule per device: **Edit schedule** on the batch changes all of them together, and the Schedules page can edit any selection of schedules at once. Each edited schedule restarts from now and its pending run is replaced; paused schedules stay paused. Daily and weekly schedules keep their wall-clock time in the time zone they were created in, across daylight-saving changes.
 
 A run only happens while its device is online. Each schedule chooses what happens otherwise:
 

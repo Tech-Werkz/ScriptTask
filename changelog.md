@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues) if you find anything.
 
+## [1.1.2] - 2026-11-24
+### Added
+- Edit several schedules at once (managers). On a scheduled batch, **Edit schedule** gives every device's schedule in the batch the same new timetable, and the batch shows it afterwards. On the Schedules page, select schedules and choose **Edit…** to do the same for any selection, whatever script or device. Each edited schedule restarts from now and its pending run is replaced, as when editing one; paused schedules stay paused.
+
 ## [1.1.1] - 2026-11-24
 ### Fixed
 - Device tab: the page is no longer resized to its full content height, which could overlap the rest of MeshCentral's device page and need the browser zoomed out. The tab is now a fixed-height frame that fills the window and scrolls inside, like the ScriptTask page. Dialogs and messages are placed in the frame's own view.

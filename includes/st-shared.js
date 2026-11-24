@@ -277,6 +277,18 @@
                     return ST.rpc('updateSchedule', { scheduleId: s._id, schedule: sc }).then(function () { ctx.close(); ST.ui.toast('Schedule saved.'); });
                 }} />`);
             },
+            // Give several schedules the same new timetable (managers). prefill: a schedule whose settings the form starts with.
+            // opts: title, subtitle, submitLabel, and scheduleIds (chosen schedules) or batchId (all of a scheduled batch's), onSaved(result)
+            editSchedules: function (prefill, opts) {
+                var target = opts.batchId ? { batchId: opts.batchId } : { scheduleIds: opts.scheduleIds };
+                ctx.setDialog(html`<${ST.dialogs.Schedule} title=${opts.title} subtitle=${opts.subtitle} submitLabel=${opts.submitLabel} schedule=${prefill} settings=${ctx.settings()} onClose=${ctx.close} onSubmit=${function (sc) {
+                    return ST.rpc('updateSchedules', Object.assign({ schedule: sc }, target)).then(function (r) {
+                        ctx.close();
+                        ST.ui.toast('Saved on ' + r.done + (r.done == 1 ? ' schedule' : ' schedules') + (r.skipped ? '. Skipped ' + r.skipped + ' on devices you can\'t see.' : '.'), r.done ? undefined : 'error');
+                        if (opts.onSaved) opts.onSaved(r);
+                    });
+                }} />`);
+            },
             pauseSchedule: function (s, paused) {
                 ST.ui.attempt(ST.rpc('pauseSchedule', { scheduleId: s._id, paused: paused }), paused ? 'Schedule paused. Its pending run was removed.' : 'Schedule resumed from its next run.');
             },

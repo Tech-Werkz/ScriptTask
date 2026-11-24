@@ -36,7 +36,7 @@
         return [Math.round(sec / 60), 60];
     }
 
-    // props: title, subtitle, schedule (when editing), settings (server defaults), onSubmit(schedule) -> Promise (resolve to close), onClose
+    // props: title, subtitle, schedule (when editing), settings (server defaults), submitLabel, onSubmit(schedule) -> Promise (resolve to close), onClose
     ST.dialogs.Schedule = function (props) {
         var stepMin = (props.settings && props.settings.scheduleStepMinutes) || 5;
         var initial = useMemo(function () {
@@ -105,7 +105,7 @@
 
         return html`<${ST.Modal} title=${props.title || 'Schedule'} onClose=${props.onClose} footer=${html`
             <button type="button" class="btn btn-secondary" onClick=${props.onClose}>Cancel</button>
-            <button type="submit" form="st-schedule" class="btn btn-primary" disabled=${busy[0]}>${busy[0] ? html`<${ST.Spinner} class="me-1" />` : html`<${ST.Icon} name="calendar-plus" class="me-1" />`}${props.schedule ? 'Save schedule' : 'Schedule'}</button>`}>
+            <button type="submit" form="st-schedule" class="btn btn-primary" disabled=${busy[0]}>${busy[0] ? html`<${ST.Spinner} class="me-1" />` : html`<${ST.Icon} name="calendar-plus" class="me-1" />`}${props.submitLabel || (props.schedule ? 'Save schedule' : 'Schedule')}</button>`}>
             <form id="st-schedule" onSubmit=${submit}>
                 ${props.subtitle ? html`<p class="text-body-secondary small mb-3">${props.subtitle}</p>` : null}
                 <div class="mb-3">

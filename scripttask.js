@@ -757,6 +757,47 @@ module.exports.scripttask = function (parent) {
         return true;
     };
 
+    // Give several schedules one new timetable (managers): the schedules in scheduleIds, or every schedule of a scheduled batch (batchId).
+    // Each is treated like a single edit: its pending run is replaced and it restarts from now. Paused schedules stay paused.
+    obj.rpc.updateSchedules = async function(args, session) {
+        await obj.requireManage(session);
+        var sched = cleanSchedule(args.schedule);
+        var visible = await obj.visibleNodes(session);
+        var found = [], skipped = 0, batch = null;
+        if (args.batchId != null) {
+            batch = await obj.db.getBatch(String(args.batchId));
+            if (batch == null || !batch.recurring) throw new RpcError('That batch has no schedule.');
+            found = (await obj.db.getAllSchedules()).filter(function(s) { return s.batchId == batch.batchId; });
+        } else {
+            for (var sid of (Array.isArray(args.scheduleIds) ? args.scheduleIds : []).slice(0, 1000)) {
+                var docs = await obj.db.get(String(sid));
+                if (docs[0] == null || docs[0].type != 'jobSchedule') { skipped++; continue; }
+                found.push(docs[0]);
+            }
+        }
+        var now = Math.floor(Date.now() / 1000), updated = [], nodes = new Set(), scripts = new Set();
+        for (var s of found) {
+            if (!visible.has(s.node)) { skipped++; continue; }
+            await obj.db.deleteUndispatchedJobsForSchedule(s._id);
+            await obj.db.update(s._id, Object.assign({}, sched, { lastSlot: now, nextRun: null, anchorAt: null }));
+            await obj.ensureScheduleJobs(s._id);
+            updated.push(s); nodes.add(s.node); scripts.add(s.scriptId);
+        }
+        // A batch shows the timetable of its schedules: refresh it when all of the batch's schedules now have it
+        var batchIds = new Set(updated.filter(function(s) { return s.batchId != null; }).map(function(s) { return s.batchId; }));
+        if (batchIds.size) {
+            var everything = (batch == null) ? await obj.db.getAllSchedules() : [], done = new Set(updated.map(function(s) { return String(s._id); }));
+            for (var bid of batchIds) {
+                var all = everything.filter(function(s) { return s.batchId == bid; });
+                if (batch == null && !all.every(function(s) { return done.has(String(s._id)); })) continue;
+                var bdoc = (batch != null && batch.batchId == bid) ? batch : await obj.db.getBatch(String(bid));
+                if (bdoc != null) await obj.db.update(bdoc._id, { schedule: sched });
+            }
+        }
+        if (updated.length) obj.invalidate({ nodeIds: Array.from(nodes), scriptIds: Array.from(scripts) });
+        return { done: updated.length, skipped: skipped };
+    };
+
     obj.pauseScheduleDoc = async function(existing, paused) {
         if (paused) {
             await obj.db.deleteUndispatchedJobsForSchedule(existing._id);
@@ -1367,7 +1408,7 @@ module.exports.scripttask = function (parent) {
     obj.RPC_ACCESS = {
         init: 'open',
         tree: 'node', nodeData: 'node', runScript: 'node', addSchedule: 'node', cancelJob: 'node', deleteSchedule: 'node', updateSchedule: 'node', pauseSchedule: 'node', job: 'node',
-        cancelAllPending: 'manage', queue: 'manage', schedules: 'manage', history: 'manage', cancelJobs: 'manage', runJobsNow: 'manage', scheduleAction: 'manage', saveSettings: 'manage',
+        cancelAllPending: 'manage', queue: 'manage', schedules: 'manage', history: 'manage', cancelJobs: 'manage', runJobsNow: 'manage', scheduleAction: 'manage', updateSchedules: 'manage', saveSettings: 'manage',
         batches: 'manage', batch: 'manage', targetSets: 'manage', saveTargetSet: 'manage', deleteTargetSet: 'manage',
         getScript: 'manage', scriptData: 'manage', addScript: 'manage', saveScript: 'manage', newFolder: 'manage', rename: 'manage', move: 'manage', deleteItem: 'manage',
         variables: 'manage', revealVar: 'manage', varUsage: 'manage', addVar: 'manage', editVar: 'manage', deleteVar: 'manage', overview: 'manage'

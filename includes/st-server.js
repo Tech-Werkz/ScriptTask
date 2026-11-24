@@ -454,9 +454,22 @@
             ST.ui.confirm({ title: 'Delete ' + plural(ids.length, 'schedule') + '?', body: 'They stop running, and their pending runs are cancelled. Past runs stay in history.', confirmText: 'Delete schedules', danger: true }).then(function (ok) { if (ok) go(); });
         };
         var runNow = function (s) { ST.ui.attempt(ST.rpc('runScript', { scriptId: s.scriptId, nodeIds: [s.node] }), props.scriptName(s.scriptId) + ' queued on ' + nodeName(s.node) + '. The schedule is unchanged.'); };
+        // One new timetable for every selected schedule, whatever script or device they are on
+        var editSelected = function () {
+            var rows = state.rows.filter(function (r) { return sel.has(r._id); });
+            if (rows.length == 0) return;
+            var same = rows.every(function (r) { return ST.fmt.recurrence(r) == ST.fmt.recurrence(rows[0]) && ST.fmt.policy(r) == ST.fmt.policy(rows[0]) && r.startAt == rows[0].startAt && r.endAt == rows[0].endAt; });
+            a.editSchedules(rows[0], {
+                title: 'Edit ' + plural(rows.length, 'schedule'),
+                subtitle: (same ? 'Saving gives all of them these settings.' : 'They differ now. Saving gives all of them the settings below, which start from the first one selected.') + ' Each restarts from now and its pending run is replaced. Paused schedules stay paused.',
+                submitLabel: 'Save on ' + plural(rows.length, 'schedule'), scheduleIds: rows.map(function (r) { return r._id; }),
+                onSaved: function () { sel.clear(); list.reload(); }
+            });
+        };
         return html`<${ListFrame} kind="schedules" title="Schedules" subtitle="Every schedule on the devices you can see, soonest first" query=${props.query} items=${props.items} onQuery=${props.onQuery}
             state=${state} page=${list.page} empty="No schedules." emptyIcon="clock"
             bulk=${html`<${BulkBar} count=${sel.ids.size} onClear=${sel.clear}>
+                <button class="btn btn-sm st-btn-quiet" onClick=${editSelected}><${ST.Icon} name="pencil" class="me-1" />Edit…</button>
                 <button class="btn btn-sm st-btn-quiet" onClick=${function () { bulk('pause'); }}><${ST.Icon} name="pause-fill" class="me-1" />Pause</button>
                 <button class="btn btn-sm st-btn-quiet" onClick=${function () { bulk('resume'); }}><${ST.Icon} name="play-fill" class="me-1" />Resume</button>
                 <button class="btn btn-sm btn-outline-danger" onClick=${function () { bulk('delete'); }}><${ST.Icon} name="trash3" class="me-1" />Delete</button>
@@ -783,6 +796,15 @@
         };
         var rerun = function () { rerunOn(rerunIds); };
         var isRerunnable = function (state) { return canRerun && RERUN_STATES.indexOf(state) >= 0; };
+        // A scheduled batch has one schedule per device: edit them all together
+        var editBatchSchedule = function () {
+            props.scheduleActions.editSchedules(b.schedule, {
+                title: 'Edit schedule: ' + batchTitle(b),
+                subtitle: 'Applies to all of this batch\'s schedules (one per device). Each restarts from now and its pending run is replaced. Paused schedules stay paused.',
+                submitLabel: 'Save on all devices', batchId: b.batchId,
+                onSaved: function () { load(); }
+            });
+        };
         var exportCsv = function () {
             ST.ui.attempt(ST.rpc('batch', { batchId: b.batchId, slot: data.slot, fullOutput: true })).then(function (full) {
                 if (full == null) return;
@@ -820,6 +842,7 @@
                     ${canRerun && rerunIds.length ? html`<button class="btn btn-sm btn-primary" onClick=${rerun}><${ST.Icon} name="arrow-repeat" class="me-1" />Run again on ${plural(rerunIds.length, 'device')}</button>` : null}
                     ${canRerun && errorIds.length && errorIds.length < rerunIds.length ? html`<button class="btn btn-sm st-btn-quiet" onClick=${function () { rerunOn(errorIds); }}><${ST.Icon} name="exclamation-octagon-fill" class="me-1" />Retry only the ${plural(errorIds.length, 'error')}</button>` : null}
                     ${pending ? html`<button class="btn btn-sm st-btn-quiet" onClick=${function () { props.go({ section: 'queue', query: { batch: b.batchId } }); }}><${ST.Icon} name="list-task" class="me-1" />Queue</button>` : null}
+                    ${b.recurring ? html`<button class="btn btn-sm st-btn-quiet" onClick=${editBatchSchedule}><${ST.Icon} name="pencil" class="me-1" />Edit schedule</button>` : null}
                     ${b.recurring ? html`<button class="btn btn-sm st-btn-quiet" onClick=${function () { props.go({ section: 'schedules', query: { batch: b.batchId } }); }}><${ST.Icon} name="clock" class="me-1" />Schedules</button>` : null}
                     <button class="btn btn-sm st-btn-quiet" onClick=${function () { props.go({ section: 'history', query: { batch: b.batchId } }); }}><${ST.Icon} name="clock-history" class="me-1" />History</button>
                     <button class="btn btn-sm st-btn-quiet" disabled=${data.rows.length == 0} onClick=${exportCsv}><${ST.Icon} name="filetype-csv" class="me-1" />Export CSV</button>
@@ -1259,7 +1282,7 @@
                 ${section == 'overview' ? html`<${OverviewSection} go=${go} openOutput=${actions.openOutput} />` : null}
                 ${section == 'variables' ? html`<${VariablesSection} query=${route[0].query} items=${items} vars=${state.vars} onQuery=${setQuery} editVar=${actions.editAnyVar} deleteVar=${actions.deleteVar} />` : null}
                 ${section == 'batches' ? html`<${BatchesSection} query=${route[0].query} go=${go} />` : null}
-                ${section == 'batch' ? html`<${BatchView} key=${route[0].id} id=${route[0].id} query=${route[0].query} items=${items} go=${go} openOutput=${actions.openOutput} />` : null}
+                ${section == 'batch' ? html`<${BatchView} key=${route[0].id} id=${route[0].id} query=${route[0].query} items=${items} go=${go} openOutput=${actions.openOutput} scheduleActions=${scheduleActions} />` : null}
                 ${section == 'queue' ? html`<${QueueSection} query=${route[0].query} items=${items} onQuery=${setQuery} />` : null}
                 ${section == 'schedules' ? html`<${SchedulesSection} query=${route[0].query} items=${items} onQuery=${setQuery} scheduleActions=${scheduleActions} scriptName=${scriptName} />` : null}
                 ${section == 'history' ? html`<${HistorySection} query=${route[0].query} items=${items} onQuery=${setQuery} openOutput=${actions.openOutput} />` : null}
