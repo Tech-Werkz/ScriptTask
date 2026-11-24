@@ -113,7 +113,7 @@ module.exports.scripttask = function (parent) {
             tabTitle: 'ScriptTask',
             tabId: 'pluginScriptTask'
         });
-        QA('pluginScriptTask', '<iframe id="pluginIframeScriptTask" style="width: 100%; height: 480px; border: 0; display: block;" scrolling="no" frameBorder=0 src="/pluginadmin.ashx?pin=scripttask&user=1" />');
+        QA('pluginScriptTask', '<iframe id="pluginIframeScriptTask" style="width: 100%; height: calc(100vh - 260px); min-height: 480px; border: 0; display: block; overflow: auto;" scrolling="auto" frameBorder=0 src="/pluginadmin.ashx?pin=scripttask&user=1" />');
     };
     // One message bus per top window, created in the top window's realm so it outlives any plugin iframe.
     // Plugin iframes subscribe to it; replies and change notices from the server are fanned out to them.
@@ -644,20 +644,31 @@ module.exports.scripttask = function (parent) {
         var nodeIds = Array.isArray(args.nodeIds) ? args.nodeIds.map(id) : [];
         if (nodeIds.length == 0) throw new RpcError('No device given.');
         if (nodeIds.length > 1) await obj.requireManage(session);
-        var allowed = await obj.allowedTargets(session, nodeIds), batchId = null;
+        var allowed = await obj.allowedTargets(session, nodeIds), batchId = null, slot = null;
         if (args.batchId != null) {
             // Running again on some of a batch's devices: the new runs join that batch, replacing those devices' results
             await obj.requireManage(session);
             var batch = await obj.db.getBatch(String(args.batchId));
-            if (batch == null || batch.recurring || String(batch.scriptId) != String(script._id)) throw new RpcError('That batch can\'t be run again.');
+            if (batch == null || String(batch.scriptId) != String(script._id)) throw new RpcError('That batch can\'t be run again.');
             batchId = batch.batchId;
-            var added = allowed.accepted.filter(function(n) { return batch.nodeIds.indexOf(n) < 0; });
-            if (added.length) await obj.db.update(batch._id, { nodeIds: batch.nodeIds.concat(added) });
+            if (batch.recurring) {
+                // A scheduled batch is run again one occurrence (slot) at a time, and only on devices already in it. The new runs
+                // carry that slot, so they replace those devices' results for it. The schedules themselves are not touched.
+                slot = Number(args.slot);
+                var batchJobs = await obj.db.getJobsForBatches([batch.batchId]);
+                if (!(slot > 0) || slot > Math.floor(Date.now() / 1000) || !batchJobs.some(function(j) { return j.slot == slot; })) throw new RpcError('That run of the batch can\'t be run again.');
+                allowed.accepted = allowed.accepted.filter(function(n) { return batch.nodeIds.indexOf(n) >= 0; });
+            } else {
+                var added = allowed.accepted.filter(function(n) { return batch.nodeIds.indexOf(n) < 0; });
+                if (added.length) await obj.db.update(batch._id, { nodeIds: batch.nodeIds.concat(added) });
+            }
         } else if (allowed.accepted.length > 1) {
             batchId = await obj.startBatch(session, script, allowed.accepted, args.name, false);
         }
         for (var nodeId of allowed.accepted) {
-            await obj.db.addJob({ scriptId: String(script._id), scriptName: script.name, node: nodeId, runBy: session.user.name, runById: session.user._id, batchId: batchId });
+            var jobDoc = { scriptId: String(script._id), scriptName: script.name, node: nodeId, runBy: session.user.name, runById: session.user._id, batchId: batchId };
+            if (slot != null) jobDoc.slot = slot; // Belongs to that occurrence of a scheduled batch, but not to a schedule (jobSchedule stays null)
+            await obj.db.addJob(jobDoc);
         }
         if (allowed.accepted.length) {
             obj.resetQueueTimer();

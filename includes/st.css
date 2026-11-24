@@ -17,6 +17,9 @@ html, body { background: transparent; }
 body { padding: 2px 2px 8px; overflow: hidden; }
 body.st-loading { visibility: hidden; }
 
+/* Device tab: a fixed-height frame, so the page scrolls inside it (body's overflow applies to the frame's viewport) */
+body.st-page-device { overflow-x: hidden; overflow-y: auto; padding-right: 6px; }
+
 .bi { vertical-align: -0.125em; flex-shrink: 0; }
 
 /* Secondary buttons drawn from the theme's text and border colours. Bootstrap's outline-secondary
@@ -93,7 +96,7 @@ textarea.form-control.st-code { font-family: var(--st-mono); font-size: .85rem; 
 .st-meta dd { margin: 0; }
 
 /* Overlays (inside this iframe) */
-/* The iframe grows to fit its content, so fixed-position overlays cover the whole page; dialogs are offset to the visible part */
+/* Fixed-position overlays cover the frame's own viewport (dialogs scroll by themselves if they are taller) */
 .st-toasts { position: fixed; right: 0; padding: .75rem; z-index: 1090; }
 
 /* Schedule form */

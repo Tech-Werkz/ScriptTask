@@ -61,9 +61,13 @@
     // ---- Iframe sizing ----
 
     // Grow the hosting iframe to fit our content, so the page never has its own scrollbar.
+    // (No page uses this now: the device tab is a fixed-height frame that scrolls. Pages that do call it get overlays placed in its visible part.)
+    var autosized = false;
+    ST.isAutosized = function () { return autosized; };
     ST.autosize = function (minHeight) {
         var fe = window.frameElement;
         if (fe == null || typeof ResizeObserver != 'function') return;
+        autosized = true;
         var last = 0;
         var update = function () {
             var height = Math.max(minHeight || 0, Math.ceil(document.body.getBoundingClientRect().height));
@@ -77,7 +81,7 @@
     // because a tall iframe's fixed-position elements would otherwise land off screen.
     ST.visibleTop = function () {
         var fe = window.frameElement;
-        if (fe == null) return 0;
+        if (fe == null || !autosized) return 0; // A frame with its own scrolling shows the top of its page where the user looks
         return Math.max(0, -fe.getBoundingClientRect().top);
     };
 
@@ -205,7 +209,7 @@
             document.addEventListener('keydown', onKey);
             // Make sure the page is tall enough to show the whole dialog
             var prev = document.body.style.minHeight;
-            if (dialog.current) document.body.style.minHeight = (top.current + dialog.current.offsetHeight + 64) + 'px';
+            if (dialog.current && ST.isAutosized()) document.body.style.minHeight = (top.current + dialog.current.offsetHeight + 64) + 'px';
             var focusEl = dialog.current && dialog.current.querySelector('[autofocus], .modal-body input, .modal-body select, .modal-body textarea, .modal-footer .btn-primary');
             if (focusEl) focusEl.focus();
             return function () { document.removeEventListener('keydown', onKey); document.body.style.minHeight = prev; };

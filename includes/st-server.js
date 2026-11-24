@@ -765,14 +765,24 @@
         var pending = STATE_ORDER.slice(5).reduce(function (t, k) { return t + (counts[k] || 0); }, 0);
         var setView = function (v) { view[1](v); store('batchView', v); };
         var openJob = function (jobId) { ST.rpc('job', { id: jobId }).then(function (full) { props.openOutput(full); }, function (e) { ST.ui.toast(e.message, 'error'); }); };
-        var rerun = function () {
-            ST.ui.confirm({ title: 'Run again on ' + plural(rerunIds.length, 'device') + '?', body: html`<p class="mb-0">${b.scriptName} runs again on the devices that had an error, missed their run, or didn't run. Their new results replace the old ones in this batch; the old runs stay in History.</p>`, confirmText: 'Run again' })
+        // Devices that had an error can be run again one by one, by result group, or all at once. A scheduled batch is run again
+        // one occurrence at a time (the one shown), once it has started; the schedules themselves aren't changed.
+        var errorIds = [].concat.apply([], groups.filter(function (g) { return g.state == 'error'; }).map(function (g) { return g.nodeIds; }));
+        var canRerun = script != null && (!b.recurring || (data.slot != null && data.slot <= ST.now()));
+        var rerunOn = function (ids) {
+            var one = ids.length == 1;
+            ST.ui.confirm({ title: 'Run again on ' + (one ? nodeName(ids[0]) : plural(ids.length, 'device')) + '?', body: html`<p class="mb-0">${b.scriptName} runs again on ${one ? 'this device' : 'these devices'}. ${one ? 'The new result replaces' : 'The new results replace'} the old ${one ? 'one' : 'ones'} in this batch${b.recurring ? ' (for the run of ' + ST.fmt.time(data.slot) + ')' : ''}; the old runs stay in History.${b.recurring ? ' The schedule isn\'t changed.' : ''}</p>`, confirmText: 'Run again' })
             .then(function (ok) {
-                if (ok) ST.ui.attempt(ST.rpc('runScript', { scriptId: b.scriptId, nodeIds: rerunIds, batchId: b.batchId })).then(function (r) {
+                if (!ok) return;
+                var args = { scriptId: b.scriptId, nodeIds: ids, batchId: b.batchId };
+                if (b.recurring) args.slot = data.slot;
+                ST.ui.attempt(ST.rpc('runScript', args)).then(function (r) {
                     if (r) { ST.ui.toast('Queued on ' + plural(r.accepted, 'device') + (r.refused.length ? '. Skipped ' + r.refused.length + ' you can\'t run scripts on.' : '.')); load(); }
                 });
             });
         };
+        var rerun = function () { rerunOn(rerunIds); };
+        var isRerunnable = function (state) { return canRerun && RERUN_STATES.indexOf(state) >= 0; };
         var exportCsv = function () {
             ST.ui.attempt(ST.rpc('batch', { batchId: b.batchId, slot: data.slot, fullOutput: true })).then(function (full) {
                 if (full == null) return;
@@ -807,7 +817,8 @@
             <div class="card"><div class="card-body st-batch-summary">
                 <${StateBar} counts=${counts} />
                 <div class="st-batch-actions">
-                    ${!b.recurring && rerunIds.length && script ? html`<button class="btn btn-sm btn-primary" onClick=${rerun}><${ST.Icon} name="arrow-repeat" class="me-1" />Run again on ${plural(rerunIds.length, 'device')}</button>` : null}
+                    ${canRerun && rerunIds.length ? html`<button class="btn btn-sm btn-primary" onClick=${rerun}><${ST.Icon} name="arrow-repeat" class="me-1" />Run again on ${plural(rerunIds.length, 'device')}</button>` : null}
+                    ${canRerun && errorIds.length && errorIds.length < rerunIds.length ? html`<button class="btn btn-sm st-btn-quiet" onClick=${function () { rerunOn(errorIds); }}><${ST.Icon} name="exclamation-octagon-fill" class="me-1" />Retry only the ${plural(errorIds.length, 'error')}</button>` : null}
                     ${pending ? html`<button class="btn btn-sm st-btn-quiet" onClick=${function () { props.go({ section: 'queue', query: { batch: b.batchId } }); }}><${ST.Icon} name="list-task" class="me-1" />Queue</button>` : null}
                     ${b.recurring ? html`<button class="btn btn-sm st-btn-quiet" onClick=${function () { props.go({ section: 'schedules', query: { batch: b.batchId } }); }}><${ST.Icon} name="clock" class="me-1" />Schedules</button>` : null}
                     <button class="btn btn-sm st-btn-quiet" onClick=${function () { props.go({ section: 'history', query: { batch: b.batchId } }); }}><${ST.Icon} name="clock-history" class="me-1" />History</button>
@@ -826,7 +837,8 @@
                         <${ST.StatusBadge} status=${g.state} />
                         <strong>${plural(g.nodeIds.length, 'device')}</strong>
                         ${finished && groups.filter(function (x) { return x.state == 'complete' || x.state == 'error'; }).length > 1 ? html`<span class="text-body-secondary small">with this output</span>` : null}
-                        ${finished && g.jobIds.length ? html`<button class="btn btn-sm st-btn-quiet ms-auto" onClick=${function () { openJob(g.jobIds[0]); }}><${ST.Icon} name="eye" class="me-1" />Full output</button>` : null}
+                        ${isRerunnable(g.state) && g.nodeIds.length ? html`<button class=${'btn btn-sm ms-auto ' + (g.state == 'error' ? 'btn-outline-primary' : 'st-btn-quiet')} onClick=${function () { rerunOn(g.nodeIds); }}><${ST.Icon} name="arrow-repeat" class="me-1" />Retry ${plural(g.nodeIds.length, 'device')}</button>` : null}
+                        ${finished && g.jobIds.length ? html`<button class=${'btn btn-sm st-btn-quiet' + (isRerunnable(g.state) && g.nodeIds.length ? '' : ' ms-auto')} onClick=${function () { openJob(g.jobIds[0]); }}><${ST.Icon} name="eye" class="me-1" />Full output</button>` : null}
                     </div>
                     <div class="card-body">
                         ${finished ? (g.output ? html`<pre class="st-group-output">${g.output}${g.truncated ? '\n…' : ''}</pre>` : html`<div class="text-body-tertiary small mb-2">No output</div>`) : null}
@@ -835,15 +847,16 @@
                 </div>`;
             })
             : html`<div class="card"><div class="table-responsive"><table class="table table-sm table-hover st-table mb-0">
-                <thead><tr><th>Device</th><th>Status</th><th>When</th><th>Took</th><th>Output</th></tr></thead>
+                <thead><tr><th>Device</th><th>Status</th><th>When</th><th>Took</th><th>Output</th><th class="st-col-actions"><span class="visually-hidden">Actions</span></th></tr></thead>
                 <tbody>${rowsSorted.map(function (r) {
                     var finished = r.completeTime != null;
-                    return html`<tr key=${r.node} class=${finished ? 'st-clickable' : ''} tabindex=${finished ? '0' : null} onClick=${function (e) { if (finished && !e.target.closest('a')) openJob(r.jobId); }} onKeyDown=${function (e) { if (finished && e.key == 'Enter') openJob(r.jobId); }}>
+                    return html`<tr key=${r.node} class=${finished ? 'st-clickable' : ''} tabindex=${finished ? '0' : null} onClick=${function (e) { if (finished && !e.target.closest('a, button')) openJob(r.jobId); }} onKeyDown=${function (e) { if (finished && e.key == 'Enter' && !e.target.closest('button')) openJob(r.jobId); }}>
                         <td><${DeviceCell} id=${r.node} /></td>
                         <td><${ST.StatusBadge} status=${r.state} /></td>
                         <td class="text-nowrap">${r.completeTime ? html`<${ST.Time} t=${r.completeTime} />` : r.dispatchTime ? html`Sent <${ST.Time} t=${r.dispatchTime} />` : r.queueTime ? html`Queued <${ST.Time} t=${r.queueTime} />` : ''}</td>
                         <td class="text-nowrap">${(r.completeTime && r.dispatchTime && r.state != 'missed') ? ST.fmt.duration(r.completeTime - r.dispatchTime) : ''}</td>
                         <td><div class="st-output-preview">${r.output ? r.output.split('\n')[0] : finished ? html`<span class="text-body-tertiary">No output</span>` : ''}</div></td>
+                        <td class="st-col-actions">${isRerunnable(r.state) ? html`<button class=${'btn btn-sm ' + (r.state == 'error' ? 'btn-outline-primary' : 'st-btn-quiet')} title="Run again on this device" onClick=${function () { rerunOn([r.node]); }}><${ST.Icon} name="arrow-repeat" class="me-1" />Retry</button>` : null}</td>
                     </tr>`; })}</tbody>
             </table></div></div>`}
         </div>`;

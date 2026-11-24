@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues) if you find anything.
 
+## [1.1.1] - 2026-11-24
+### Fixed
+- Device tab: the page is no longer resized to its full content height, which could overlap the rest of MeshCentral's device page and need the browser zoomed out. The tab is now a fixed-height frame that fills the window and scrolls inside, like the ScriptTask page. Dialogs and messages are placed in the frame's own view.
+
+### Added
+- Batches: devices with an error (or that missed their run, were cancelled or didn't run) can be run again from each result group (**Retry N devices**), from each row in the By device view (**Retry**), or all at once (**Run again on N devices**, plus **Retry only the errors** when other results are included). The new result replaces the old one in the batch, so the batch can reach complete; the old runs stay in History.
+- Scheduled batches can be run again too, one occurrence at a time (the run shown, once it has started), on devices already in the batch. The schedules are not changed.
+
 ## [1.1.0] - 2026-11-15
 ### Changed (read before upgrading)
 - **Every permission now defaults to denied, so after this update nobody can use ScriptTask until an administrator grants a permission.** "Run scripts" used to be allowed by default; it is now denied like "Manage ScriptTask". Existing users, including everyone who could run scripts before, must be granted access in MeshCentral's plugin permissions dialog (global, device group or device) before the ScriptTask tab or page works for them. A grant on a device group or device overrides a global "denied".

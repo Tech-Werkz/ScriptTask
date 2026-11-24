@@ -286,5 +286,5 @@
     }
 
     preact.render(html`<${App} />`, document.getElementById('app'));
-    ST.autosize(160);
+    // The frame has a fixed height set by MeshCentral's device tab (see onDeviceRefreshEnd); this page scrolls inside it, like the ScriptTask page.
 })();
