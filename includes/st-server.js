@@ -728,7 +728,7 @@
                         <td><a href=${'#/batch/' + b.batchId} onClick=${function (e) { e.preventDefault(); }}>${batchTitle(b)}</a>
                             <div class="text-body-secondary small">${b.name ? b.scriptName + ' · ' : ''}${b.recurring ? html`<${ST.Icon} name="clock" class="me-1" />Scheduled: ${ST.fmt.recurrence(b.schedule || {})}` : 'Run now'}</div></td>
                         <td class="text-nowrap"><${ST.Time} t=${b.createdAt} /><div class="text-body-secondary small">${b.createdBy}</div></td>
-                        <td>${b.visibleDevices}${b.visibleDevices != b.nodeIds.length ? html`<span class="text-body-secondary small"> of ${b.nodeIds.length}</span>` : null}</td>
+                        <td>${b.visibleDevices}${b.visibleDevices != b.deviceCount ? html`<span class="text-body-secondary small"> of ${b.deviceCount}</span>` : null}</td>
                         <td class="st-col-results">${b.recurring && b.slot ? html`<div class="text-body-secondary small mb-1">${b.slot > ST.now() ? 'Next' : 'Latest'}: ${ST.fmt.time(b.slot)}</div>` : null}<${StateBar} counts=${b.counts} /></td>
                     </tr>`; })}</tbody>
                 </table></div>`}
@@ -737,7 +737,7 @@
         </div>`;
     }
 
-    function csvCell(v) { v = (v == null) ? '' : String(v); return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
+    function csvCell(v) { v = (v == null) ? '' : String(v); if (/^[=+\-@\t\r]/.test(v)) v = "'" + v; /* Device output could start a spreadsheet formula */ return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
     function isoTime(t) { return t ? new Date(t * 1000).toISOString() : ''; }
 
     function DeviceChips(props) {
@@ -828,7 +828,7 @@
             <${BackLink} go=${props.go} />
             <div class="st-list-head">
                 <h2 class="h4 mb-0">${batchTitle(b)}</h2>
-                <span class="text-body-secondary small">${b.name ? b.scriptName + ' · ' : ''}${b.recurring ? 'Scheduled: ' + ST.fmt.recurrence(b.schedule || {}) + ' · ' : ''}${plural(b.nodeIds.length, 'device')} · started by ${b.createdBy} <${ST.Time} t=${b.createdAt} /></span>
+                <span class="text-body-secondary small">${b.name ? b.scriptName + ' · ' : ''}${b.recurring ? 'Scheduled: ' + ST.fmt.recurrence(b.schedule || {}) + ' · ' : ''}${plural(b.deviceCount, 'device')} · started by ${b.createdBy} <${ST.Time} t=${b.createdAt} /></span>
             </div>
             ${b.recurring ? html`<div class="st-batch-slot">
                 <label class="form-label mb-0" for="st-slot">Run</label>

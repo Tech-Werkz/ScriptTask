@@ -48,7 +48,7 @@ module.exports.scripttask = function (parent) {
         'getBus',
         'onRpcResult',
         'onInvalidate',
-        'malix_triggerOption'
+        'setTabVisible'
     ];
 
     const MESHRIGHT_REMOTECOMMAND = 0x00020000;
@@ -71,12 +71,6 @@ module.exports.scripttask = function (parent) {
         }
     };
 
-    obj.malix_triggerOption = function(selectElem) {
-        selectElem.options.add(new Option("ScriptTask - Run Script", "scripttask_runscript"));
-    }
-    obj.malix_triggerFields_scripttask_runscript = function() {
-
-    }
     // The queue check runs on an interval from Settings (every minute by default)
     obj.timerSeconds = null;
     obj.resetQueueTimer = function() {
@@ -113,7 +107,18 @@ module.exports.scripttask = function (parent) {
             tabTitle: 'ScriptTask',
             tabId: 'pluginScriptTask'
         });
-        QA('pluginScriptTask', '<iframe id="pluginIframeScriptTask" style="width: 100%; height: calc(100vh - 260px); min-height: 480px; border: 0; display: block; overflow: auto;" scrolling="auto" frameBorder=0 src="/pluginadmin.ashx?pin=scripttask&user=1" />');
+        pluginHandler.scripttask.setTabVisible(true);
+        // The server checks the user's ScriptTask permission for this device when the page is requested, and refuses it (and hides the tab) without one
+        var nodeId = (typeof currentNode == 'object' && currentNode != null && typeof currentNode._id == 'string') ? currentNode._id : '';
+        QA('pluginScriptTask', '<iframe id="pluginIframeScriptTask" style="width: 100%; height: calc(100vh - 260px); min-height: 480px; border: 0; display: block; overflow: auto;" scrolling="auto" frameBorder=0 src="/pluginadmin.ashx?pin=scripttask&user=1&nodeid=' + encodeURIComponent(nodeId) + '" />');
+    };
+    // Show or hide ScriptTask's tab header on the device page
+    obj.setTabVisible = function(visible) {
+        try {
+            var heads = Q('p19headers');
+            if (heads == null) return;
+            Array.prototype.forEach.call(heads.querySelectorAll('a'), function(a) { if ((a.textContent || '').trim() == 'ScriptTask') a.style.display = visible ? '' : 'none'; });
+        } catch (e) { }
     };
     // One message bus per top window, created in the top window's realm so it outlives any plugin iframe.
     // Plugin iframes subscribe to it; replies and change notices from the server are fanned out to them.
@@ -139,24 +144,28 @@ module.exports.scripttask = function (parent) {
 
     // Built-in variables, filled in when a run is sent. Device details are read from MeshCentral only if the script uses them.
     var DEVICE_VARS = ['GBL:nodeName', 'GBL:meshName', 'GBL:tags', 'GBL:os'];
+    // Device, group, tag, script and user names are typed by people and end up inside scripts, so a name could close a quote and add a command.
+    // Characters that can do that are replaced with _ ; control characters are dropped and values are cut at 256 characters.
+    function safeValue(v) { return String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, '').replace(/["'`$;&|<>%^\\]/g, '_').substring(0, 256); }
+    obj.safeValue = safeValue;
     obj.builtInVars = async function(job, script, names) {
         var agent = obj.meshServer.webserver.wsagents[job.node];
         var meshId = agent ? agent.dbMeshKey : null;
         var v = {
             'GBL:nodeId': job.node,
             'GBL:meshId': meshId,
-            'GBL:runBy': job.runBy || 'unknown',
-            'GBL:scriptName': script.name,
+            'GBL:runBy': safeValue(job.runBy || 'unknown'),
+            'GBL:scriptName': safeValue(script.name),
             'GBL:runTime': new Date().toISOString()
         };
         if (DEVICE_VARS.some(function(n) { return names.indexOf(n) >= 0; })) {
             var node = await new Promise(function(resolve) { obj.meshServer.db.Get(job.node, function(err, docs) { resolve((docs && docs[0]) || null); }); });
             if (node != null && meshId == null) meshId = node.meshid;
             var meshes = obj.meshServer.webserver.meshes || {};
-            v['GBL:nodeName'] = node ? (node.name || '') : '';
-            v['GBL:tags'] = (node && Array.isArray(node.tags)) ? node.tags.join(',') : '';
-            v['GBL:os'] = node ? (node.osdesc || '') : '';
-            v['GBL:meshName'] = (meshId && meshes[meshId]) ? meshes[meshId].name : '';
+            v['GBL:nodeName'] = safeValue(node ? node.name : '');
+            v['GBL:tags'] = safeValue((node && Array.isArray(node.tags)) ? node.tags.join(',') : '');
+            v['GBL:os'] = safeValue(node ? node.osdesc : '');
+            v['GBL:meshName'] = safeValue((meshId && meshes[meshId]) ? meshes[meshId].name : '');
         }
         return v;
     };
@@ -242,6 +251,7 @@ module.exports.scripttask = function (parent) {
         })
         .then(() => {
             obj.cleanHistory();
+            obj.pruneAccess();
             // Settings load after startup: pick up a non-default interval on the first check
             if (obj.settingsCache && obj.settingsCache.queueIntervalSeconds != obj.timerSeconds) obj.resetQueueTimer();
             return obj.ensureScheduleJobs().catch(e => console.log('PLUGIN: ScriptTask: Error managing job schedules: ', e));
@@ -268,34 +278,65 @@ module.exports.scripttask = function (parent) {
     };
     obj._downloadFile = function(req, res, user) {
         var id = req.query.dl;
+        if (typeof id != 'string' || id.length == 0 || id.length > 128) { res.sendStatus(400); return; }
         obj.db.get(id)
         .then(found => {
           if (found.length != 1 || found[0].type != 'script') { res.sendStatus(401); return; }
           var file = found[0];
           res.setHeader('Content-disposition', 'attachment; filename="' + file.name.replace(/["\\\r\n]/g, '_') + '"; filename*=UTF-8\'\'' + encodeURIComponent(file.name));
           res.setHeader('Content-type', 'text/plain');
+          res.setHeader('X-Content-Type-Options', 'nosniff');
           res.send(file.content);
-        });
+        })
+        .catch(function() { if (!res.headersSent) res.sendStatus(500); });
     };
 
-    obj.serveInclude = function(req, res) {
+    // The page's scripts and styles are served only to users who have passed a ScriptTask permission check (see noteAccess)
+    obj.serveInclude = function(req, res, user) {
+        if (!obj.hasAccess(user)) { res.sendStatus(403); return; }
         var path = req.query.path;
         if (typeof path != 'string' || !/^[A-Za-z0-9_\-]+(\/[A-Za-z0-9_\-.]+)*\.(js|css)$/.test(path) || path.indexOf('..') !== -1) { res.sendStatus(404); return; }
         res.sendFile(path, { root: obj.INCLUDES, dotfiles: 'deny', maxAge: '1h' }, function (err) { if (err && !res.headersSent) res.sendStatus(404); });
     };
 
+    // What a refused user sees. Fixed text only. On the device tab it also hides the tab's header.
+    obj.deniedPage = function(message, hideTab) {
+        return '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>ScriptTask</title></head><body style="margin:1rem;font-family:sans-serif;background:transparent;color:#888">' + message +
+            (hideTab ? '<script>try { window.parent.pluginHandler.scripttask.setTabVisible(false); } catch (e) { }</script>' : '') + '</body></html>';
+    };
+
+    // The device tab's page: for users with the "Run scripts" permission on that device (and its Remote Commands right), or managers who can see it
+    obj.serveDeviceShell = function(req, res, user) {
+        var nodeId = req.query.nodeid;
+        var refuse = function() { if (!res.headersSent) res.status(403).send(obj.deniedPage('You don\'t have access to ScriptTask on this device.', true)); };
+        var domain = (obj.meshServer.config && obj.meshServer.config.domains) ? obj.meshServer.config.domains[user.domain] : null;
+        if (typeof nodeId != 'string' || nodeId.length == 0 || nodeId.length > 128 || domain == null) { refuse(); return; }
+        obj.getNodeCaps({ user: user, domain: domain }, nodeId)
+        .then(function(caps) {
+            if (caps.node == null) return false;
+            return caps.run ? true : obj.hasPerm(user, 'manage');
+        })
+        .then(function(ok) {
+            if (ok !== true) { refuse(); return; }
+            obj.noteAccess(user, true);
+            res.render(obj.VIEWS + 'device', { version: obj.version });
+        })
+        .catch(refuse);
+    };
+
     obj.handleAdminReq = function(req, res, user) {
-        if (req.query.include == 1) return obj.serveInclude(req, res);
+        if (user == null) { res.sendStatus(401); return; }
+        if (req.query.include == 1) return obj.serveInclude(req, res, user);
         if (req.query.user == 1) {
             if (req.query.dl != null) return obj.downloadFile(req, res, user);
-            res.render(obj.VIEWS + 'device', { version: obj.version });
-            return;
+            return obj.serveDeviceShell(req, res, user);
         }
         // The ScriptTask page, opened from My Server > Plugins (MeshCentral's goPlugin sends no other parameters)
         obj.hasPerm(user, 'manage').then(function(ok) {
-            if (!ok) { res.status(403).send('The ScriptTask page is for ScriptTask managers.'); return; }
+            obj.noteAccess(user, ok === true);
+            if (ok !== true) { res.status(403).send(obj.deniedPage('The ScriptTask page is for ScriptTask managers.', false)); return; }
             res.render(obj.VIEWS + 'server', { version: obj.version });
-        }).catch(function() { if (!res.headersSent) res.status(403).send('The ScriptTask page is for ScriptTask managers.'); });
+        }).catch(function() { if (!res.headersSent) res.status(403).send(obj.deniedPage('The ScriptTask page is for ScriptTask managers.', false)); });
     };
 
     // ---- Scheduling ----
@@ -413,18 +454,22 @@ module.exports.scripttask = function (parent) {
     // Tell open ScriptTask pages that something changed, so they re-query what they show.
     // Notices carry ids only, never data. Device notices go only to users who can see that device.
     obj.invalidate = function(scopes) {
-        var send = function(targets, payload) {
-            obj.meshServer.DispatchEvent(targets, obj, Object.assign({ nolog: true, action: 'plugin', plugin: 'scripttask', pluginaction: 'onInvalidate' }, payload));
+        var send = function(userIds, payload) {
+            if (userIds.length == 0) return;
+            obj.meshServer.DispatchEvent(userIds, obj, Object.assign({ nolog: true, action: 'plugin', plugin: 'scripttask', pluginaction: 'onInvalidate' }, payload));
         };
-        if (scopes.library || scopes.variables || scopes.settings || (scopes.scriptIds && scopes.scriptIds.length)) {
-            send(['server-allusers'], { library: scopes.library === true, variables: scopes.variables === true, settings: scopes.settings === true, scriptIds: (scopes.scriptIds || []).map(String) });
-        }
-        (scopes.nodeIds || []).forEach(function(nodeId) {
-            obj.meshServer.db.Get(nodeId, function(err, nodes) {
-                if (nodes == null || nodes.length != 1) return;
-                send(obj.meshServer.webserver.CreateNodeDispatchTargets(nodes[0].meshid, nodeId), { nodeIds: [nodeId] });
+        try {
+            var audience = obj.noticeAudience();
+            if (audience.length == 0) return;
+            if (scopes.library || scopes.variables || scopes.settings || (scopes.scriptIds && scopes.scriptIds.length)) {
+                send(audience.map(function(u) { return u._id; }), { library: scopes.library === true, variables: scopes.variables === true, settings: scopes.settings === true, scriptIds: (scopes.scriptIds || []).map(String) });
+            }
+            (scopes.nodeIds || []).forEach(function(nodeId) {
+                Promise.all(audience.map(function(u) { return obj.canSeeNodeCached(u, nodeId).then(function(ok) { return ok ? u._id : null; }); }))
+                .then(function(ids) { send(ids.filter(function(x) { return x != null; }), { nodeIds: [nodeId] }); })
+                .catch(function() { });
             });
-        });
+        } catch (e) { console.log('PLUGIN: ScriptTask: Could not send change notices: ', e); }
     };
 
     // ---- Permissions ----
@@ -549,9 +594,60 @@ module.exports.scripttask = function (parent) {
         if (ownerId == null || ownerId != session.user._id) throw new RpcError('You can only change jobs and schedules you created.');
     };
 
+    // ---- Who is allowed in ----
+    // A user who passes a ScriptTask permission check (the page, or a request) is recorded for 8 hours after their last one.
+    // Only recorded users are sent the page's scripts and styles and change notices. Refusing the ScriptTask page removes the record.
+    var ACCESS_TTL = 8 * 3600 * 1000;
+    obj.access = {};
+    obj.noteAccess = function(user, ok) {
+        if (user == null || typeof user._id != 'string') return;
+        if (ok === true) obj.access[user._id] = Date.now(); else delete obj.access[user._id];
+    };
+    obj.hasAccess = function(user) {
+        var t = (user != null) ? obj.access[user._id] : null;
+        return t != null && (Date.now() - t) < ACCESS_TTL;
+    };
+    var seenCache = {};
+    obj.pruneAccess = function() {
+        var now = Date.now();
+        Object.keys(obj.access).forEach(function(k) { if (now - obj.access[k] >= ACCESS_TTL) delete obj.access[k]; });
+        Object.keys(seenCache).forEach(function(k) { if (seenCache[k].until < now) delete seenCache[k]; });
+        Object.keys(obj._decisionLogged).forEach(function(k) { if (now - obj._decisionLogged[k] > 600000) delete obj._decisionLogged[k]; });
+    };
+    // Signed-in users (with a MeshCentral session now) who are recorded as allowed in ScriptTask
+    obj.noticeAudience = function() {
+        var web = obj.meshServer.webserver, out = [];
+        if (web == null || web.wssessions == null || web.users == null) return out;
+        Object.keys(web.wssessions).forEach(function(uid) { var u = web.users[uid]; if (u != null && obj.hasAccess(u)) out.push(u); });
+        return out;
+    };
+    // Whether a user can see a device in MeshCentral, remembered for a minute
+    obj.canSeeNodeCached = function(user, nodeId) {
+        var k = user._id + '|' + nodeId, c = seenCache[k], now = Date.now();
+        if (c != null && c.until > now) return Promise.resolve(c.ok);
+        var domain = (obj.meshServer.config && obj.meshServer.config.domains) ? obj.meshServer.config.domains[user.domain] : null;
+        if (domain == null) return Promise.resolve(false);
+        return new Promise(function(resolve) {
+            obj.meshServer.webserver.GetNodeWithRights(domain, user, nodeId, function(node, rights, visible) {
+                var ok = node != null && visible === true;
+                seenCache[k] = { ok: ok, until: Date.now() + 60000 };
+                resolve(ok);
+            });
+        });
+    };
+
     // ---- RPC ----
 
     function RpcError(message) { this.message = message; }
+
+    // Output from a device is untrusted: kept as text, and no more than a million characters
+    var MAX_OUTPUT = 1000000;
+    function capOutput(v) {
+        if (v == null) return null;
+        v = (typeof v == 'string') ? v : String(v);
+        return (v.length > MAX_OUTPUT) ? v.substring(0, MAX_OUTPUT) + '\n... (output cut off at 1,000,000 characters)' : v;
+    }
+    obj.capOutput = capOutput;
 
     function str(v, max) {
         if (typeof v != 'string') throw new RpcError('Invalid input.');
@@ -560,6 +656,12 @@ module.exports.scripttask = function (parent) {
         return v;
     }
     function id(v) { return str(v, 128); }
+    // The device ids in a request: at most 5000, as in a saved set of devices
+    function deviceList(v) {
+        if (!Array.isArray(v)) return [];
+        if (v.length > 5000) throw new RpcError('Too many devices at once. Choose 5000 or fewer.');
+        return v.map(id);
+    }
     function name(v) {
         v = str(v, 200);
         if (/[\/\\]/.test(v)) throw new RpcError('Names can\'t contain / or \\.');
@@ -612,13 +714,16 @@ module.exports.scripttask = function (parent) {
     // Everything a device tab needs to start: what this user may do, and the device's connection state.
     obj.rpc.init = async function(args, session) {
         var caps = (args.nodeId != null) ? await obj.getNodeCaps(session, id(args.nodeId)) : { node: null, run: false, remoteCommand: false };
-        return {
+        var manage = await obj.hasPerm(session.user, 'manage'), allowed = manage === true || caps.run === true;
+        if (allowed) obj.noteAccess(session.user, true);
+        var out = {
             version: obj.version,
             user: { id: session.user._id, name: session.user.name },
-            caps: { manage: await obj.hasPerm(session.user, 'manage'), run: caps.run, remoteCommand: caps.remoteCommand === true, visible: caps.node != null },
-            node: (caps.node == null) ? null : { id: caps.node._id, online: obj.meshServer.webserver.wsagents[caps.node._id] != null },
-            settings: await obj.getSettings()
+            caps: { manage: manage, run: caps.run, remoteCommand: caps.remoteCommand === true, visible: caps.node != null },
+            node: (!allowed || caps.node == null) ? null : { id: caps.node._id, online: obj.meshServer.webserver.wsagents[caps.node._id] != null }
         };
+        if (allowed) out.settings = await obj.getSettings(); // Nothing but what the user may do for someone who isn't allowed in
+        return out;
     };
 
     // The script tree. With a device given, the "run" permission is resolved for that device, so a grant made
@@ -641,7 +746,7 @@ module.exports.scripttask = function (parent) {
 
     obj.rpc.runScript = async function(args, session) {
         var script = await getOne(args.scriptId, 'script');
-        var nodeIds = Array.isArray(args.nodeIds) ? args.nodeIds.map(id) : [];
+        var nodeIds = deviceList(args.nodeIds);
         if (nodeIds.length == 0) throw new RpcError('No device given.');
         if (nodeIds.length > 1) await obj.requireManage(session);
         var allowed = await obj.allowedTargets(session, nodeIds), batchId = null, slot = null;
@@ -681,7 +786,7 @@ module.exports.scripttask = function (parent) {
     obj.rpc.addSchedule = async function(args, session) {
         var script = await getOne(args.scriptId, 'script');
         var sched = cleanSchedule(args.schedule);
-        var nodeIds = Array.isArray(args.nodeIds) ? args.nodeIds.map(id) : [];
+        var nodeIds = deviceList(args.nodeIds);
         if (nodeIds.length == 0) throw new RpcError('No device given.');
         if (nodeIds.length > 1) await obj.requireManage(session);
         var allowed = await obj.allowedTargets(session, nodeIds);
@@ -1112,6 +1217,8 @@ module.exports.scripttask = function (parent) {
             var latest = latestPerNode(mine);
             b.counts = countStates(Object.keys(latest).map(function(k) { return latest[k]; }), now);
             b.visibleDevices = b.nodeIds.filter(function(n) { return visible.has(n); }).length;
+            b.deviceCount = b.nodeIds.length;
+            b.nodeIds = b.nodeIds.filter(function(n) { return visible.has(n); }); // Ids of devices this user can't see aren't sent
         });
         return { total: results[0], batches: batches };
     };
@@ -1145,7 +1252,7 @@ module.exports.scripttask = function (parent) {
         // Most common result first; finished results before pending ones
         var order = { complete: 0, error: 0, missed: 1, cancelled: 1, stale: 2, dispatched: 3, queued: 4, waiting: 4, scheduled: 5 };
         var list = Object.keys(groups).map(function(k) { return groups[k]; }).sort(function(a, b) { return (order[a.state] - order[b.state]) || (b.nodeIds.length - a.nodeIds.length); });
-        return { batch: batch, slots: slots, slot: slot, counts: countStates(jobs, now), groups: list, rows: rows,
+        return { batch: Object.assign({}, batch, { nodeIds: batch.nodeIds.filter(function(n) { return visible.has(n); }), deviceCount: batch.nodeIds.length }), slots: slots, slot: slot, counts: countStates(jobs, now), groups: list, rows: rows,
             missing: batch.nodeIds.filter(function(n) { return visible.has(n) && latest[n] == null; }) };
     };
 
@@ -1428,7 +1535,10 @@ module.exports.scripttask = function (parent) {
         Promise.resolve()
         .then(function() { return obj.gateRpc(command.method, session); })
         .then(function() { return obj.rpc[command.method](args, session); })
-        .then(function(data) { reply(true, data); })
+        .then(function(data) {
+            if (obj.RPC_ACCESS[command.method] != 'open') obj.noteAccess(session.user, true); // Passed its permission check
+            reply(true, data);
+        })
         .catch(function(e) {
             if (e instanceof RpcError) { reply(false, e.message); return; }
             console.log('PLUGIN: ScriptTask: Error in ' + command.method + ': ', e);
@@ -1441,10 +1551,16 @@ module.exports.scripttask = function (parent) {
     obj.agentAction = function(command, agent) {
         switch (command.pluginaction) {
             case 'getScript':
-                //obj.debug('ScriptTask', 'getScript Triggered', JSON.stringify(command));
-                obj.db.get(command.scriptId)
-                .then(script => {
-                    if (script.length != 1) return;
+                // A device gets only a script it was sent a run for, and only what it needs to run it
+                if (typeof command.scriptId != 'string' || command.scriptId.length == 0 || command.scriptId.length > 128) break;
+                obj.db.getIncompleteJobsForNode(agent.dbNodeKey)
+                .then(function(jobs) {
+                    if (!jobs.some(function(j) { return j.dispatchTime != null && String(j.scriptId) == command.scriptId; })) return null;
+                    return obj.db.get(command.scriptId);
+                })
+                .then(function(found) {
+                    if (found == null || found.length != 1 || found[0].type != 'script') return;
+                    var sc = found[0];
                     agent.send(JSON.stringify({
                         action: 'plugin',
                         plugin: 'scripttask',
@@ -1452,18 +1568,23 @@ module.exports.scripttask = function (parent) {
                         nodeid: agent.dbNodeKey,
                         rights: true,
                         sessionid: true,
-                        script: script[0]
+                        script: { _id: sc._id, name: sc.name, filetype: sc.filetype, content: sc.content, contentHash: sc.contentHash }
                     }));
-                });
+                })
+                .catch(function(e) { console.log('PLUGIN: ScriptTask: Could not send a script to a device: ', e); });
             break;
             case 'jobComplete':
                 //obj.debug('ScriptTask', 'jobComplete Triggered', JSON.stringify(command));
-                var jobId = command.jobId, retVal = command.retVal, errVal = command.errVal, dispatchTime = command.dispatchTime;
+                if (typeof command.jobId != 'string' || command.jobId.length == 0 || command.jobId.length > 128) break;
+                var jobId = command.jobId, retVal = capOutput(command.retVal), errVal = capOutput(command.errVal);
                 var completeTime = Math.floor(new Date() / 1000);
                 obj.db.get(jobId)
                 .then(jobs => {
                     var job = jobs[0];
-                    if (job == null || job.node != agent.dbNodeKey) return; // Agents may only report their own jobs
+                    if (job == null || job.type != 'job' || job.node != agent.dbNodeKey) return; // Agents may only report their own jobs
+                    // Only a run that was sent can report, once (a cancelled or interrupted run may still report late)
+                    if (job.dispatchTime == null || (job.completeTime != null && !job.cancelled && !job.interrupted)) return;
+                    var dispatchTime = job.dispatchTime; // The time the server recorded, not what the device says
                     var update = { completeTime: completeTime, returnVal: retVal, errorVal: errVal, dispatchTime: dispatchTime };
                     if (job.cancelled) { update.completeTime = job.completeTime; update.errorVal = job.errorVal; update.lateReturnVal = retVal; update.lateErrorVal = errVal; delete update.returnVal; }
                     if (job.interrupted) update.interrupted = false; // It finished after all: its real result replaces "Interrupted"
@@ -1502,7 +1623,7 @@ module.exports.scripttask = function (parent) {
             return;
         }
         if (command.pluginaction == 'rpc') { obj.handleRpc(command, myparent); return; }
-        console.log('PLUGIN: ScriptTask: unknown action ' + command.pluginaction);
+        console.log('PLUGIN: ScriptTask: unknown action ' + String(command.pluginaction).replace(/[^\w.-]/g, '?').substring(0, 40));
     };
 
     return obj;

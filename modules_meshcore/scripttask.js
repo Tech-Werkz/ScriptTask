@@ -83,13 +83,6 @@ function agentDir() {
     } catch (e) { }
     return null;
 }
-// The folder the earlier versions used, as a fallback
-function legacyDir() {
-    if (process.platform == 'win32') return process.cwd();
-    var fs = require('fs');
-    for (var i = 0; i < LEGACY_DIRS_UNIX.length; i++) { if (fs.existsSync(LEGACY_DIRS_UNIX[i])) return LEGACY_DIRS_UNIX[i]; }
-    return '/tmp';
-}
 // Run commands in a shell (cmd.exe or sh), the way the script runners do, and call done() when it exits
 function shellCommands(lines, done) {
     try {
@@ -113,7 +106,8 @@ function emptyFolder(dir, onlyLegacy) {
         });
     } catch (e) { dbg('Could not clean ' + dir + ': ' + e); }
 }
-// Calls back with the work folder, creating and locking it down first if needed
+// Calls back with the work folder, creating and locking it down first if needed. Calls back with null if it can't be:
+// scripts (and the variable values in them) are never written to a folder other users can read or change.
 function withWorkDir(callback) {
     if (workDir != null) { callback(workDir); return; }
     if (workDirWaiting != null) { workDirWaiting.push(callback); return; }
@@ -121,13 +115,13 @@ function withWorkDir(callback) {
     var fs = require('fs');
     var base = agentDir(), dir = (base != null) ? joinPath(base, 'scripttask') : null;
     var finish = function (chosen) {
-        workDir = chosen;
-        emptyFolder(workDir, workDir != dir); // Empty our own folder; in a shared fallback folder, only our old files
+        workDir = chosen; // null is not remembered: the next run tries again
+        if (chosen != null) emptyFolder(chosen, false);
         var waiting = workDirWaiting; workDirWaiting = null;
-        waiting.forEach(function (cb) { cb(workDir); });
+        waiting.forEach(function (cb) { cb(chosen); });
     };
     try { if (dir != null && !fs.existsSync(dir)) fs.mkdirSync(dir); } catch (e) { dbg('Could not create ' + dir + ': ' + e); }
-    if (dir == null || !fs.existsSync(dir)) { finish(legacyDir()); return; }
+    if (dir == null || !fs.existsSync(dir)) { finish(null); return; }
     if (process.platform == 'win32') {
         // Only SYSTEM (S-1-5-18) and Administrators (S-1-5-32-544), whatever the system's language
         shellCommands(['icacls "' + dir + '" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F'], function () { finish(dir); });
@@ -250,8 +244,11 @@ function consoleaction(args, rights, sessionid, parent) {
     }
 }
 
+// Output is cut at a million characters before it goes to the server
+function capText(v) { return (typeof v == 'string' && v.length > 1000000) ? v.substring(0, 1000000) + '\n... (output cut off at 1,000,000 characters)' : v; }
 function finalizeJob(job, retVal, errVal) {
     if (errVal != null && errVal.stack != null) errVal = errVal.stack;
+    retVal = capText(retVal); errVal = capText(errVal);
     if (runTimers[job.jobId] != null) { clearTimeout(runTimers[job.jobId]); delete runTimers[job.jobId]; }
     if (timedOut[job.jobId] != null) {
         errVal = describeTimeout(timedOut[job.jobId], (retVal != null && retVal != 'Success' && retVal != 'Failure') ? retVal : null);
@@ -577,6 +574,7 @@ function runScript(sObj, jObj) {
     runningJobs.push(jObj.jobId);
     dbg('Running Script '+ sObj._id);
     withWorkDir(function (dir) {
+        if (dir == null) { finalizeJob(jObj, null, 'The private folder ScriptTask uses for scripts could not be created, so the script was not run.'); return; }
         switch (sObj.filetype) {
             case 'ps1':
                 runPowerShell(sObj, jObj, dir);

@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues) if you find anything.
 
+## [1.1.3] - 2026-11-25
+### Security
+- Pages and files need a permission. The device tab's page is refused unless the user has **Run scripts** on that device (and its Remote Commands right) or is a manager who can see it, and the tab is hidden when it is refused. The page's scripts and styles are sent only to users who passed a ScriptTask check in the last 8 hours. Users without a permission no longer get the plugin's settings.
+- Change notices go only to signed-in users who are allowed in ScriptTask (and, for a device, can see it), not to everyone.
+- A device could ask the server for any script, and on NeDB, by passing a crafted id, for other records in the plugin's database, such as variables (including secret ones). It now gets only a script it was sent a run for, and only the fields it needs.
+- A device can report only a run that was sent to it, once; the server keeps its own run time, and output is cut at 1,000,000 characters (on the device and on the server).
+- Names that people can set (device, group, tag, script and user) are made safe before they are filled into scripts as built-in variables: `" ' ` $ ; & | < > % ^ \` become `_`. Before, in a script that used one of these variables, a user or device name could end a quoted string and add a command that ran as SYSTEM or root.
+- On a device, a script is never written to a shared folder (`/tmp` and similar) when ScriptTask's private folder can't be created: the run fails with an error instead.
+- Batches no longer send the ids of devices the manager can't see. Requests with more than 5000 devices are refused. The script download, and requests from devices, check the type of the ids they get.
+- CSV exports of batch results prefix cells that start with `=`, `+`, `-` or `@`, so output from a device can't run as a spreadsheet formula.
+
+### Removed
+- The unused Malix trigger hooks (nothing in the plugin handled them), and the page code that resized the device tab's frame, which version 1.1.1 replaced.
+
+### Fixed
+- A database error while saving could throw inside NeDB's callback; errors are now returned to the caller. A query written with a callback no longer calls it twice.
+
 ## [1.1.2] - 2026-11-24
 ### Added
 - Edit several schedules at once (managers). On a scheduled batch, **Edit schedule** gives every device's schedule in the batch the same new timetable, and the batch shows it afterwards. On the Schedules page, select schedules and choose **Edit…** to do the same for any selection, whatever script or device. Each edited schedule restarts from now and its pending run is replaced, as when editing one; paused schedules stay paused.

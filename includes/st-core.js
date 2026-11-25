@@ -58,33 +58,6 @@
         return function () { var i = invalidateListeners.indexOf(fn); if (i >= 0) invalidateListeners.splice(i, 1); };
     };
 
-    // ---- Iframe sizing ----
-
-    // Grow the hosting iframe to fit our content, so the page never has its own scrollbar.
-    // (No page uses this now: the device tab is a fixed-height frame that scrolls. Pages that do call it get overlays placed in its visible part.)
-    var autosized = false;
-    ST.isAutosized = function () { return autosized; };
-    ST.autosize = function (minHeight) {
-        var fe = window.frameElement;
-        if (fe == null || typeof ResizeObserver != 'function') return;
-        autosized = true;
-        var last = 0;
-        var update = function () {
-            var height = Math.max(minHeight || 0, Math.ceil(document.body.getBoundingClientRect().height));
-            if (height != last) { last = height; fe.style.height = height + 'px'; }
-        };
-        new ResizeObserver(update).observe(document.body);
-        update();
-    };
-
-    // The top of the part of this page the user can currently see. Overlays are placed there,
-    // because a tall iframe's fixed-position elements would otherwise land off screen.
-    ST.visibleTop = function () {
-        var fe = window.frameElement;
-        if (fe == null || !autosized) return 0; // A frame with its own scrolling shows the top of its page where the user looks
-        return Math.max(0, -fe.getBoundingClientRect().top);
-    };
-
     // ---- Formatting ----
 
     var rtf = (typeof Intl != 'undefined' && Intl.RelativeTimeFormat) ? new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' }) : null;
@@ -200,26 +173,22 @@
         return html`<span class=${'spinner-border spinner-border-sm ' + (props.class || '')} role="status"><span class="visually-hidden">Loading</span></span>`;
     };
 
-    // Modal dialog drawn inside this iframe, placed in the visible part of the page
+    // Modal dialog drawn inside this iframe
     ST.Modal = function (props) {
-        var top = useRef(ST.visibleTop());
         var dialog = useRef(null);
         useEffect(function () {
             var onKey = function (e) { if (e.key == 'Escape' && props.onClose) props.onClose(); };
             document.addEventListener('keydown', onKey);
-            // Make sure the page is tall enough to show the whole dialog
-            var prev = document.body.style.minHeight;
-            if (dialog.current && ST.isAutosized()) document.body.style.minHeight = (top.current + dialog.current.offsetHeight + 64) + 'px';
             var focusEl = dialog.current && dialog.current.querySelector('[autofocus], .modal-body input, .modal-body select, .modal-body textarea, .modal-footer .btn-primary');
             if (focusEl) focusEl.focus();
-            return function () { document.removeEventListener('keydown', onKey); document.body.style.minHeight = prev; };
+            return function () { document.removeEventListener('keydown', onKey); };
         }, []);
         var size = props.size ? ' modal-' + props.size : '';
         return html`
             <div class="st-modal-layer">
                 <div class="modal-backdrop show" onClick=${props.onClose}></div>
                 <div class="modal d-block" role="dialog" aria-modal="true" aria-label=${props.title} onClick=${function (e) { if (e.target === e.currentTarget && props.onClose) props.onClose(); }}>
-                    <div class=${'modal-dialog' + size} style=${'margin-top:' + (top.current + 24) + 'px'} ref=${dialog}>
+                    <div class=${'modal-dialog' + size} ref=${dialog}>
                         <div class="modal-content">
                             <div class="modal-header">
                                 <h5 class="modal-title">${props.title}</h5>
@@ -283,7 +252,7 @@
     function renderToasts() {
         if (toastRoot == null) { toastRoot = document.createElement('div'); overlayRoot().appendChild(toastRoot); }
         preact.render(html`
-            <div class="toast-container st-toasts" style=${'top:' + (ST.visibleTop() + 12) + 'px'} aria-live="polite">
+            <div class="toast-container st-toasts" aria-live="polite">
                 ${toasts.map(function (t) { return html`
                     <div key=${t.id} class=${'toast show align-items-center border-0 ' + (t.kind == 'error' ? 'text-bg-danger' : 'text-bg-dark')} role="status">
                         <div class="d-flex"><div class="toast-body">${t.message}</div>

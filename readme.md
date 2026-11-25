@@ -52,9 +52,9 @@ If a permission check fails for any reason (an error, a missing or unexpected an
 
 ### What the permissions can and can't enforce
 
-- **Enforced on the server:** every request the ScriptTask pages send (library, variables, runs, schedules, history, settings, the script download) is checked on the server before it runs, so hiding or showing parts of the page is not what protects anything.
-- **The tab and page shell are still served.** The ScriptTask tab appears on every device and loads its page; without a permission that page has no data and its requests are refused. The page's own files (scripts and styles) are not secret.
-- **Change notices** (which device, script or setting changed, with no content) are still sent to users who can see the device, or to all signed-in users for library, variable and settings changes. They carry ids only.
+- **Enforced on the server:** every request the ScriptTask pages send (library, variables, runs, schedules, history, settings, the script download) is checked on the server before it runs, so hiding or showing parts of the page is not what protects anything. Someone with no ScriptTask permission also gets no settings back from the plugin's start-up request.
+- **Pages and files are served only to allowed users.** The device tab's page is refused (and the tab hidden, where MeshCentral's page lets ScriptTask do that) unless the user has the **Run scripts** permission on that device and its Remote Commands right, or is a manager who can see the device. The ScriptTask page needs **Manage ScriptTask**. The page's scripts and styles are sent only to a user who has passed one of those checks in the last 8 hours (the time is renewed by each permitted request).
+- **Change notices** (which device, script or setting changed, with no content) go only to signed-in users who passed a ScriptTask check in the last 8 hours, and for a device only if they can see it. Someone whose permission was just removed can keep receiving these notices (ids only, no data) until they next use the plugin or the 8 hours pass; every request they make is refused at once.
 - **Outside ScriptTask:** anything a user can do directly with MeshCentral (its own Console and Run commands, terminal and file access on a device they have rights to) does not pass through this plugin and is controlled by MeshCentral's device rights, not by these permissions.
 - **Changes take effect on the next request.** A grant works without restarting MeshCentral, and a revoke stops the next request from that user. A page that is already open keeps showing what it loaded until it asks again.
 - On MeshCentral 1.3.1 with MySQL, a known MeshCentral problem (#8307, `getPluginPermissions is not a function`) can stop saved permissions from loading. If it appears in the console or `meshcentral-data/mesherrors.txt`, it is a MeshCentral bug that a plugin can't fix; ScriptTask then refuses everyone except full administrators.
@@ -110,7 +110,7 @@ Each run is sent to its device once. If the device or its agent restarts before 
 
 ## On the device
 
-The agent writes each script, with its variables filled in, and its output to a `scripttask` folder next to the agent program (for example `C:\Program Files\Mesh Agent\scripttask`). Only SYSTEM and Administrators can open it on Windows, and only root elsewhere. The files are deleted when the script finishes, and the folder is emptied whenever the agent starts. Scripts start in that folder, so use full paths for files you want to keep.
+The agent writes each script, with its variables filled in, and its output to a `scripttask` folder next to the agent program (for example `C:\Program Files\Mesh Agent\scripttask`). Only SYSTEM and Administrators can open it on Windows, and only root elsewhere. If that folder can't be created, the script is not run and the run shows an error: scripts and their variable values are never written to a shared folder such as `/tmp`. The files are deleted when the script finishes, and the folder is emptied whenever the agent starts. Scripts start in that folder, so use full paths for files you want to keep.
 
 ## Variables
 
@@ -129,7 +129,7 @@ Built-in variables:
 | `#GBL:nodeId#`, `#GBL:meshId#` | The device's and its group's MeshCentral ids |
 | `#GBL:runBy#` | The user, or schedule owner, who started the run |
 
-They are the least specific level, so a variable you define with the same name (at any scope) replaces the built-in value. Values are inserted exactly as written: `$` and `#` in a value are not treated specially.
+Values that people can type (the device, group, tag, script and user names, and the operating system text) have these characters replaced by `_` when they are filled in, because a name like `x"; calc; "` could otherwise add a command to a script: `" ' ` $ ; & | < > % ^ \`. Control characters are dropped and the value is cut at 256 characters. The ids, `#GBL:runTime#` and variables you define are inserted exactly as written. They are the least specific level, so a variable you define with the same name (at any scope) replaces the built-in value. Values are inserted exactly as written: `$` and `#` in a value are not treated specially.
 
 Values are filled in when the run is sent to the device, so the latest script and variable values are used. **Secret** variables are hidden in lists and in the editor until revealed. Scripts still receive the real value, so their output can show it.
 
