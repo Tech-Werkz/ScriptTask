@@ -138,6 +138,7 @@
                     <span class="st-script-name">${item.name}</span>
                     <span class="st-type" title=${ST.fmt.filetype(filetype[0])}>${filetype[0]}</span>
                     <span class="st-script-path">${item.path}</span>
+                    ${item.path == 'Private' || item.path.indexOf('Private/') == 0 ? html`<span class="badge text-bg-secondary" title="Only full administrators can see this script"><${ST.Icon} name="lock" class="me-1" />Private</span>` : null}
                     ${dirty ? html`<span class="badge text-bg-warning">Unsaved</span>` : null}
                 </div>
                 <div class="st-actions-row">
@@ -223,7 +224,7 @@
     }
 
     function FolderPanel(props) {
-        var item = props.item, a = props.actions, isRoot = item.path == 'Shared';
+        var item = props.item, a = props.actions, isRoot = item.path == 'Shared' || item.path == 'Private', isPrivate = item.path == 'Private' || item.path.indexOf('Private/') == 0;
         var inside = props.items.filter(function (i) { return i._id != item._id && (i.path == item.path || i.path.indexOf(item.path + '/') == 0); });
         var scripts = inside.filter(function (i) { return i.type == 'script'; }).length, folders = inside.filter(function (i) { return i.type == 'folder'; }).length;
         return html`<div class="st-workspace">
@@ -235,6 +236,7 @@
                 </div>
             </div>
             <div class="st-tab-body">
+                ${isPrivate ? html`<div class="alert alert-secondary d-flex gap-2 align-items-start"><${ST.Icon} name="lock" class="mt-1" /><div><strong>Private.</strong> Only full administrators can see this folder and the scripts in it, and their runs, schedules, batches and variables. Nobody else sees them, even managers. Scripts can't be moved out of Private, and other scripts can't be moved in: create or upload them here.</div></div>` : null}
                 <p class="text-body-secondary">${plural(scripts, 'script')} and ${plural(folders, 'folder')} in this folder, including subfolders.</p>
                 <div class="d-flex gap-2 flex-wrap">
                     <button class="btn btn-primary" onClick=${a.newScript}><${ST.Icon} name="file-earmark-plus" class="me-1" />New script here</button>
@@ -533,7 +535,7 @@
         var favKey = 'favourites.' + props.userId;
         var fav = useState(store(favKey) || []);
         var sel = useState(function () { return new Set(q.devices ? q.devices.split(',') : []); }), selected = sel[0];
-        var f = useState({ text: '', group: '', tag: '', os: '', conn: '' }), filt = f[0];
+        var f = useState({ text: '', group: [], tag: [], tagMode: 'any', os: '', conn: '' }), filt = f[0];
         var batchName = useState('');
         var sets = useState([]), setId = useState('');
         var limit = useState(DEVICE_ROWS);
@@ -544,14 +546,15 @@
             return agentNodes().map(function (n) { return { _id: n._id, name: n.name, meshid: n.meshid, tags: n.tags || [], os: osOf(n), online: (n.conn & 1) != 0, node: n }; })
                 .sort(function (a, b) { return a.name.localeCompare(b.name); });
         }, []);
-        var groups = useMemo(function () { var m = {}; nodes.forEach(function (n) { m[n.meshid] = meshName(n.meshid); }); return Object.keys(m).map(function (k) { return [k, m[k]]; }).sort(function (a, b) { return a[1].localeCompare(b[1]); }); }, [nodes]);
-        var tags = useMemo(function () { var t = {}; nodes.forEach(function (n) { n.tags.forEach(function (x) { t[x] = 1; }); }); return Object.keys(t).sort(); }, [nodes]);
+        // [value, label, number of devices]
+        var groups = useMemo(function () { var m = {}, c = {}; nodes.forEach(function (n) { m[n.meshid] = meshName(n.meshid); c[n.meshid] = (c[n.meshid] || 0) + 1; }); return Object.keys(m).map(function (k) { return [k, m[k], c[k]]; }).sort(function (a, b) { return a[1].localeCompare(b[1]); }); }, [nodes]);
+        var tags = useMemo(function () { var t = {}; nodes.forEach(function (n) { n.tags.forEach(function (x) { t[x] = (t[x] || 0) + 1; }); }); return Object.keys(t).sort().map(function (k) { return [k, k, t[k]]; }); }, [nodes]);
         var blockedReason = function (n) { if (item == null) return null; var c = S.compatibility(item.filetype, S.isWindows(n.node)); return (c && c.block) ? c.msg : null; };
         var text = filt.text.trim().toLowerCase();
         var shown = nodes.filter(function (n) {
             if (text && n.name.toLowerCase().indexOf(text) < 0) return false;
-            if (filt.group && n.meshid != filt.group) return false;
-            if (filt.tag && n.tags.indexOf(filt.tag) < 0) return false;
+            if (filt.group.length && filt.group.indexOf(n.meshid) < 0) return false; // In any of the chosen groups
+            if (filt.tag.length) { var hits = filt.tag.filter(function (t) { return n.tags.indexOf(t) >= 0; }).length; if (filt.tagMode == 'all' ? hits < filt.tag.length : hits == 0) return false; }
             if (filt.os && n.os != filt.os) return false;
             if (filt.conn == 'online' && !n.online) return false;
             if (filt.conn == 'offline' && n.online) return false;
@@ -634,12 +637,13 @@
                 <div class="card-body pb-2">
                     <div class="st-filters mb-2">
                         <input type="search" class="form-control form-control-sm" placeholder="Search devices" aria-label="Search devices" value=${filt.text} onInput=${function (e) { setFilter('text', e.target.value); }} />
-                        <select class="form-select form-select-sm" aria-label="Device group" value=${filt.group} onChange=${function (e) { setFilter('group', e.target.value); }}>
-                            <option value="">All device groups</option>${groups.map(function (g) { return html`<option value=${g[0]}>${g[1]}</option>`; })}
-                        </select>
-                        ${tags.length ? html`<select class="form-select form-select-sm" aria-label="Tag" value=${filt.tag} onChange=${function (e) { setFilter('tag', e.target.value); }}>
-                            <option value="">All tags</option>${tags.map(function (t) { return html`<option value=${t}>${t}</option>`; })}
-                        </select>` : null}
+                        <${S.MultiSelect} ariaLabel="Device groups" label="All device groups" noun="groups" options=${groups} value=${filt.group} onChange=${function (v) { setFilter('group', v); }} />
+                        ${tags.length ? html`<${S.MultiSelect} ariaLabel="Tags" label="All tags" noun="tags" options=${tags} value=${filt.tag} onChange=${function (v) { setFilter('tag', v); }}
+                            footer=${filt.tag.length > 1 ? html`<span class="d-inline-flex align-items-center gap-1">Match
+                                <span class="btn-group btn-group-sm" role="group" aria-label="Match tags">
+                                    <button type="button" class=${'btn ' + (filt.tagMode == 'any' ? 'btn-primary' : 'btn-outline-secondary')} aria-pressed=${filt.tagMode == 'any'} title="Devices with at least one of the chosen tags" onClick=${function () { setFilter('tagMode', 'any'); }}>Any</button>
+                                    <button type="button" class=${'btn ' + (filt.tagMode == 'all' ? 'btn-primary' : 'btn-outline-secondary')} aria-pressed=${filt.tagMode == 'all'} title="Only devices with all of the chosen tags" onClick=${function () { setFilter('tagMode', 'all'); }}>All</button>
+                                </span></span>` : null} />` : null}
                         <select class="form-select form-select-sm" aria-label="Operating system" value=${filt.os} onChange=${function (e) { setFilter('os', e.target.value); }}>
                             <option value="">Any OS</option><option value="win">Windows</option><option value="other">Linux / macOS</option>
                         </select>
@@ -706,6 +710,27 @@
 
     function batchTitle(b) { return b.name || b.scriptName; }
 
+    // Ask, then delete batches. Resolves with the server's answer, or null when cancelled or it failed.
+    function deleteBatchesDialog(batches) {
+        var opt = { runs: false }, scheduled = batches.filter(function (b) { return b.recurring; }).length;
+        var count = batches.length + (batches.length == 1 ? ' batch' : ' batches');
+        return ST.ui.confirm({
+            title: 'Delete ' + (batches.length == 1 ? 'this batch' : count) + '?',
+            body: html`<p>${batches.length == 1 ? html`<strong>${batchTitle(batches[0])}</strong> is` : 'The selected batches are'} removed from Batches. Runs that haven't been sent to a device are cancelled${scheduled ? ', and the schedules of scheduled batches are deleted' : ''}. Runs already sent finish where they are.</p>
+                <div class="form-check"><input class="form-check-input" type="checkbox" id="st-del-runs" onChange=${function (e) { opt.runs = e.target.checked; }} /><label class="form-check-label" for="st-del-runs">Also delete the finished runs from History</label></div>
+                <div class="form-text">Otherwise they stay in History, without the batch.</div>`,
+            confirmText: 'Delete', danger: true
+        }).then(function (ok) {
+            if (!ok) return null;
+            return ST.ui.attempt(ST.rpc('deleteBatches', { batchIds: batches.map(function (b) { return b.batchId; }), deleteRuns: opt.runs }));
+        }).then(function (r) {
+            if (r == null) return null;
+            if (r.done) ST.ui.toast('Deleted ' + r.done + (r.done == 1 ? ' batch' : ' batches') + (r.skipped ? '. Skipped ' + r.skipped + ': ' + (r.reason || 'not found') : '.'));
+            else ST.ui.toast(r.reason || 'Nothing was deleted.', 'error');
+            return r;
+        });
+    }
+
     function BatchesSection(props) {
         var page = Math.max(1, Number(props.query.page) || 1);
         var st = useState({ loading: true, error: null, total: 0, rows: [] }), state = st[0], set = st[1];
@@ -715,16 +740,25 @@
         useEffect(function () { load(); }, [load]);
         useEffect(function () { var timer = null; return ST.onInvalidate(function (m) { if ((m.nodeIds && m.nodeIds.length) || (m.scriptIds && m.scriptIds.length)) { clearTimeout(timer); timer = setTimeout(load, 600); } }); }, [load]);
         var open = function (b) { props.go({ section: 'batch', id: b.batchId }); };
+        var sel = useSelection(state.rows);
+        var removeSelected = function () {
+            var chosen = state.rows.filter(function (b) { return sel.has(b._id); });
+            if (chosen.length) deleteBatchesDialog(chosen).then(function (r) { if (r && r.done) { sel.clear(); load(); } });
+        };
         return html`<div class="st-list-page">
             <div class="st-list-head"><h2 class="h4 mb-0">Batches</h2><span class="text-body-secondary small">Runs and schedules across several devices, newest first</span>
                 <button class="btn btn-sm btn-primary ms-auto" onClick=${function () { props.go({ section: 'run' }); }}><${ST.Icon} name="send" class="me-1" />New run</button></div>
+            <${BulkBar} count=${sel.ids.size} onClear=${sel.clear}>
+                <button class="btn btn-sm btn-outline-danger" onClick=${removeSelected}><${ST.Icon} name="trash3" class="me-1" />Delete</button>
+            </${BulkBar}>
             <div class="card"><div class="card-body p-0">
                 ${state.error ? html`<div class="alert alert-danger m-3">${state.error}</div>`
                 : state.loading ? html`<div class="text-center py-5"><${ST.Spinner} /></div>`
                 : state.rows.length == 0 ? html`<${ST.Empty} icon="collection">No batches yet. Run or schedule a script on several devices from Run.</${ST.Empty}>`
                 : html`<div class="table-responsive"><table class="table table-sm table-hover st-table mb-0">
-                    <thead><tr><th>Batch</th><th>Started</th><th>Devices</th><th class="st-col-results">Results</th></tr></thead>
-                    <tbody>${state.rows.map(function (b) { return html`<tr key=${b.batchId} class="st-clickable" tabindex="0" onClick=${function () { open(b); }} onKeyDown=${function (e) { if (e.key == 'Enter') open(b); }}>
+                    <thead><tr><th class="st-col-check"><input class="form-check-input" type="checkbox" aria-label="Select all on this page" checked=${sel.all} onChange=${sel.toggleAll} /></th><th>Batch</th><th>Started</th><th>Devices</th><th class="st-col-results">Results</th></tr></thead>
+                    <tbody>${state.rows.map(function (b) { return html`<tr key=${b.batchId} class=${'st-clickable' + (sel.has(b._id) ? ' table-active' : '')} tabindex="0" onClick=${function () { open(b); }} onKeyDown=${function (e) { if (e.key == 'Enter' && e.target == e.currentTarget) open(b); }}>
+                        <td class="st-col-check" onClick=${function (e) { e.stopPropagation(); }}><input class="form-check-input" type="checkbox" aria-label=${'Select ' + batchTitle(b)} checked=${sel.has(b._id)} onChange=${function () { sel.toggle(b._id); }} /></td>
                         <td><a href=${'#/batch/' + b.batchId} onClick=${function (e) { e.preventDefault(); }}>${batchTitle(b)}</a>
                             <div class="text-body-secondary small">${b.name ? b.scriptName + ' · ' : ''}${b.recurring ? html`<${ST.Icon} name="clock" class="me-1" />Scheduled: ${ST.fmt.recurrence(b.schedule || {})}` : 'Run now'}</div></td>
                         <td class="text-nowrap"><${ST.Time} t=${b.createdAt} /><div class="text-body-secondary small">${b.createdBy}</div></td>
@@ -846,6 +880,7 @@
                     ${b.recurring ? html`<button class="btn btn-sm st-btn-quiet" onClick=${function () { props.go({ section: 'schedules', query: { batch: b.batchId } }); }}><${ST.Icon} name="clock" class="me-1" />Schedules</button>` : null}
                     <button class="btn btn-sm st-btn-quiet" onClick=${function () { props.go({ section: 'history', query: { batch: b.batchId } }); }}><${ST.Icon} name="clock-history" class="me-1" />History</button>
                     <button class="btn btn-sm st-btn-quiet" disabled=${data.rows.length == 0} onClick=${exportCsv}><${ST.Icon} name="filetype-csv" class="me-1" />Export CSV</button>
+                    <button class="btn btn-sm btn-outline-danger ms-auto" onClick=${function () { deleteBatchesDialog([b]).then(function (r) { if (r && r.done) props.go({ section: 'batches' }); }); }}><${ST.Icon} name="trash3" class="me-1" />Delete batch</button>
                 </div>
             </div></div>
             <div class="btn-group btn-group-sm align-self-start" role="group" aria-label="View">

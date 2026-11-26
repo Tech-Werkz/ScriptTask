@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues) if you find anything.
 
+## [1.2.0] - 2026-11-26
+### Added
+- **Private folder** in the Library, for scripts only full administrators can see. Everything about a private script (runs, schedules, batches, output, its variables, its download, its `#variables#` usage) is left out for everyone else, on the server, so hiding it in the page is not what protects it. Nothing can be moved into or out of Private, and the Private folder can't be renamed, moved or deleted.
+- **Delete a batch**, from its page or from a selection in the Batches list. Unsent runs are cancelled and the schedules of a scheduled batch are deleted; finished runs stay in History without the batch, or are deleted with it if you choose.
+- **Run**: device groups and tags are chosen with checkboxes, so several can be chosen. Several groups match devices in any of them; several tags match any of them, or all of them with the new Any / All switch. Each choice shows how many devices it has.
+
 ## [1.1.3] - 2026-11-25
 ### Security
 - Pages and files need a permission. The device tab's page is refused unless the user has **Run scripts** on that device (and its Remote Commands right) or is a manager who can see it, and the tab is hidden when it is refused. The page's scripts and styles are sent only to users who passed a ScriptTask check in the last 8 hours. Users without a permission no longer get the plugin's settings.

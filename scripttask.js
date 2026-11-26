@@ -281,7 +281,7 @@ module.exports.scripttask = function (parent) {
         if (typeof id != 'string' || id.length == 0 || id.length > 128) { res.sendStatus(400); return; }
         obj.db.get(id)
         .then(found => {
-          if (found.length != 1 || found[0].type != 'script') { res.sendStatus(401); return; }
+          if (found.length != 1 || found[0].type != 'script' || (isPrivatePath(found[0].path) && !obj.isFullAdmin(user))) { res.sendStatus(401); return; }
           var file = found[0];
           res.setHeader('Content-disposition', 'attachment; filename="' + file.name.replace(/["\\\r\n]/g, '_') + '"; filename*=UTF-8\'\'' + encodeURIComponent(file.name));
           res.setHeader('Content-type', 'text/plain');
@@ -668,15 +668,46 @@ module.exports.scripttask = function (parent) {
         return v;
     }
 
-    function getOne(itemId, type) {
+    // With a session, a script or folder in the Private folder is "not found" for anyone but a full administrator
+    function getOne(itemId, type, session) {
         return obj.db.get(id(itemId)).then(function(found) {
             if (found.length != 1 || (type != null && found[0].type != type)) throw new RpcError('Not found. It may have been deleted.');
+            if (session != null && isPrivatePath(found[0].path) && !obj.canUsePrivate(session)) throw new RpcError('Not found. It may have been deleted.');
             return found[0];
         });
     }
-    function folderPath(folderId) {
+
+    // ---- Private scripts ----
+    // The Private folder (path "Private") holds scripts only full administrators can see, edit, run or schedule. Everything about them
+    // (runs, schedules, batches, variables of the script) is hidden from everyone else, and they can't be moved out of it or into it,
+    // so a private script never becomes shared by accident.
+    var PRIVATE_ROOT = 'Private';
+    function isPrivatePath(p) { return typeof p == 'string' && (p == PRIVATE_ROOT || p.indexOf(PRIVATE_ROOT + '/') === 0); }
+    obj.isPrivatePath = isPrivatePath;
+    obj.canUsePrivate = function(session) { return obj.isFullAdmin(session.user); };
+    var privateCache = null;
+    obj.resetPrivateCache = function() { privateCache = null; };
+    obj.privateScriptIds = async function() {
+        if (privateCache != null && privateCache.until > Date.now()) return privateCache.ids;
+        var items = await obj.db.getByPathPrefix(PRIVATE_ROOT);
+        var ids = new Set(items.filter(function(i) { return i.type == 'script'; }).map(function(i) { return String(i._id); }));
+        privateCache = { ids: ids, until: Date.now() + 5000 };
+        return ids;
+    };
+    // The script ids this user must not see: none for a full administrator
+    obj.hiddenScripts = async function(session) {
+        return obj.canUsePrivate(session) ? new Set() : obj.privateScriptIds();
+    };
+    // The Private folder is made the first time a full administrator opens the library
+    obj.ensurePrivateRoot = function() {
+        return obj.serial(async function() {
+            var found = await obj.db.getByPath(PRIVATE_ROOT);
+            if (!found.some(function(i) { return i.type == 'folder' && i.name == PRIVATE_ROOT; })) await obj.db.addFolder(PRIVATE_ROOT, PRIVATE_ROOT);
+        });
+    };
+    function folderPath(folderId, session) {
         if (folderId == null) return Promise.resolve('Shared');
-        return getOne(folderId).then(function(f) { return f.path; }); // A folder's path includes itself; a script's path is its folder
+        return getOne(folderId, null, session).then(function(f) { return f.path; }); // A folder's path includes itself; a script's path is its folder
     }
     function cleanSchedule(sj) {
         if (sj == null || RECUR_TYPES.indexOf(sj.recur) === -1) throw new RpcError('Invalid schedule.');
@@ -719,7 +750,7 @@ module.exports.scripttask = function (parent) {
         var out = {
             version: obj.version,
             user: { id: session.user._id, name: session.user.name },
-            caps: { manage: manage, run: caps.run, remoteCommand: caps.remoteCommand === true, visible: caps.node != null },
+            caps: { manage: manage, run: caps.run, remoteCommand: caps.remoteCommand === true, visible: caps.node != null, private: obj.canUsePrivate(session) },
             node: (!allowed || caps.node == null) ? null : { id: caps.node._id, online: obj.meshServer.webserver.wsagents[caps.node._id] != null }
         };
         if (allowed) out.settings = await obj.getSettings(); // Nothing but what the user may do for someone who isn't allowed in
@@ -731,21 +762,27 @@ module.exports.scripttask = function (parent) {
     obj.rpc.tree = async function(args, session) {
         if (args.nodeId != null) await obj.requireNode(session, args.nodeId);
         else if (!(await obj.hasPerm(session.user, 'run')) && !(await obj.hasPerm(session.user, 'manage'))) throw new RpcError('No access.');
-        return obj.db.getScriptTree();
+        if (obj.canUsePrivate(session)) {
+            await obj.ensurePrivateRoot();
+            return obj.db.getScriptTree();
+        }
+        return (await obj.db.getScriptTree()).filter(function(i) { return !isPrivatePath(i.path); });
     };
 
     obj.rpc.nodeData = async function(args, session) {
         var node = await obj.requireNode(session, args.nodeId);
+        var hidden = await obj.hiddenScripts(session);
         var results = await Promise.all([
             obj.db.getIncompleteJobsForNode(node._id),
             obj.db.getJobSchedulesForNode(node._id),
             obj.db.getJobNodeHistory(node._id)
         ]);
-        return { online: obj.meshServer.webserver.wsagents[node._id] != null, queue: results[0], schedules: results[1], history: results[2].filter(function(j) { return j.completeTime != null; }) };
+        var shown = function(x) { return !hidden.has(String(x.scriptId)); };
+        return { online: obj.meshServer.webserver.wsagents[node._id] != null, queue: results[0].filter(shown), schedules: results[1].filter(shown), history: results[2].filter(function(j) { return j.completeTime != null && shown(j); }) };
     };
 
     obj.rpc.runScript = async function(args, session) {
-        var script = await getOne(args.scriptId, 'script');
+        var script = await getOne(args.scriptId, 'script', session);
         var nodeIds = deviceList(args.nodeIds);
         if (nodeIds.length == 0) throw new RpcError('No device given.');
         if (nodeIds.length > 1) await obj.requireManage(session);
@@ -784,7 +821,7 @@ module.exports.scripttask = function (parent) {
     };
 
     obj.rpc.addSchedule = async function(args, session) {
-        var script = await getOne(args.scriptId, 'script');
+        var script = await getOne(args.scriptId, 'script', session);
         var sched = cleanSchedule(args.schedule);
         var nodeIds = deviceList(args.nodeIds);
         if (nodeIds.length == 0) throw new RpcError('No device given.');
@@ -812,8 +849,14 @@ module.exports.scripttask = function (parent) {
         obj.invalidate({ nodeIds: [job.node], scriptIds: [job.scriptId] });
     };
 
+    // A run, schedule or batch of a private script is "not found" for users who may not see private scripts
+    obj.assertVisibleScript = async function(session, scriptId) {
+        if ((await obj.hiddenScripts(session)).has(String(scriptId))) throw new RpcError('Not found. It may have been deleted.');
+    };
+
     obj.rpc.cancelJob = async function(args, session) {
         var job = await getOne(args.jobId, 'job');
+        await obj.assertVisibleScript(session, job.scriptId);
         await obj.requireNode(session, job.node);
         await obj.requireOwnerOrManage(session, job.runById);
         if (job.completeTime != null) throw new RpcError('This job has already finished.');
@@ -843,6 +886,7 @@ module.exports.scripttask = function (parent) {
 
     obj.rpc.deleteSchedule = async function(args, session) {
         var sched = await getOne(args.scheduleId, 'jobSchedule');
+        await obj.assertVisibleScript(session, sched.scriptId);
         await obj.requireNode(session, sched.node);
         await obj.requireOwnerOrManage(session, sched.scheduledById);
         await obj.deleteScheduleDoc(sched);
@@ -851,6 +895,7 @@ module.exports.scripttask = function (parent) {
 
     obj.rpc.updateSchedule = async function(args, session) {
         var existing = await getOne(args.scheduleId, 'jobSchedule');
+        await obj.assertVisibleScript(session, existing.scriptId);
         await obj.requireNode(session, existing.node);
         await obj.requireOwnerOrManage(session, existing.scheduledById);
         var sched = cleanSchedule(args.schedule);
@@ -867,11 +912,11 @@ module.exports.scripttask = function (parent) {
     obj.rpc.updateSchedules = async function(args, session) {
         await obj.requireManage(session);
         var sched = cleanSchedule(args.schedule);
-        var visible = await obj.visibleNodes(session);
+        var visible = await obj.visibleNodes(session), hidden = await obj.hiddenScripts(session);
         var found = [], skipped = 0, batch = null;
         if (args.batchId != null) {
             batch = await obj.db.getBatch(String(args.batchId));
-            if (batch == null || !batch.recurring) throw new RpcError('That batch has no schedule.');
+            if (batch == null || !batch.recurring || hidden.has(String(batch.scriptId))) throw new RpcError('That batch has no schedule.');
             found = (await obj.db.getAllSchedules()).filter(function(s) { return s.batchId == batch.batchId; });
         } else {
             for (var sid of (Array.isArray(args.scheduleIds) ? args.scheduleIds : []).slice(0, 1000)) {
@@ -882,7 +927,7 @@ module.exports.scripttask = function (parent) {
         }
         var now = Math.floor(Date.now() / 1000), updated = [], nodes = new Set(), scripts = new Set();
         for (var s of found) {
-            if (!visible.has(s.node)) { skipped++; continue; }
+            if (!visible.has(s.node) || hidden.has(String(s.scriptId))) { skipped++; continue; }
             await obj.db.deleteUndispatchedJobsForSchedule(s._id);
             await obj.db.update(s._id, Object.assign({}, sched, { lastSlot: now, nextRun: null, anchorAt: null }));
             await obj.ensureScheduleJobs(s._id);
@@ -917,6 +962,7 @@ module.exports.scripttask = function (parent) {
 
     obj.rpc.pauseSchedule = async function(args, session) {
         var existing = await getOne(args.scheduleId, 'jobSchedule');
+        await obj.assertVisibleScript(session, existing.scriptId);
         await obj.requireNode(session, existing.node);
         await obj.requireOwnerOrManage(session, existing.scheduledById);
         await obj.pauseScheduleDoc(existing, args.paused === true);
@@ -988,11 +1034,11 @@ module.exports.scripttask = function (parent) {
         await obj.requireManage(session);
         await obj.getSettings();
         var filters = cleanFilters(args.filters), p = page(args), now = Math.floor(Date.now() / 1000);
-        var visible = await obj.visibleNodes(session);
+        var visible = await obj.visibleNodes(session), hidden = await obj.hiddenScripts(session);
         var nodes = new Set(nodeScope(filters, visible));
         var runBy = filters.runBy ? new RegExp(escapeRegex(filters.runBy), 'i') : null;
         var jobs = (await obj.db.getAllIncompleteJobs()).filter(function(j) {
-            if (!nodes.has(j.node)) return false;
+            if (!nodes.has(j.node) || hidden.has(String(j.scriptId))) return false;
             if (filters.scriptId && j.scriptId != filters.scriptId) return false;
             if (filters.batchId && j.batchId != filters.batchId) return false;
             if (runBy && !runBy.test(j.runBy || '')) return false;
@@ -1012,11 +1058,11 @@ module.exports.scripttask = function (parent) {
     obj.rpc.schedules = async function(args, session) {
         await obj.requireManage(session);
         var filters = cleanFilters(args.filters), p = page(args);
-        var visible = await obj.visibleNodes(session);
+        var visible = await obj.visibleNodes(session), hidden = await obj.hiddenScripts(session);
         var nodes = new Set(nodeScope(filters, visible));
         var runBy = filters.runBy ? new RegExp(escapeRegex(filters.runBy), 'i') : null;
         var list = (await obj.db.getAllSchedules()).filter(function(s) {
-            if (!nodes.has(s.node)) return false;
+            if (!nodes.has(s.node) || hidden.has(String(s.scriptId))) return false;
             if (filters.scriptId && s.scriptId != filters.scriptId) return false;
             if (filters.batchId && s.batchId != filters.batchId) return false;
             if (runBy && !runBy.test(s.scheduledBy || '')) return false;
@@ -1032,7 +1078,7 @@ module.exports.scripttask = function (parent) {
     obj.rpc.history = async function(args, session) {
         await obj.requireManage(session);
         var filters = cleanFilters(args.filters), p = page(args);
-        var visible = await obj.visibleNodes(session);
+        var visible = await obj.visibleNodes(session), hidden = await obj.hiddenScripts(session);
         var find = jobQuery(nodeScope(filters, visible), { $gt: 0 }), and = find.$and;
         if (filters.from) find.completeTime.$gte = filters.from;
         if (filters.to) find.completeTime.$lte = filters.to;
@@ -1047,6 +1093,7 @@ module.exports.scripttask = function (parent) {
             case 'error': and.push({ errorVal: { $ne: null } }, { returnVal: null }, { missed: { $ne: true } }, { cancelled: { $ne: true } }); break;
             case 'complete': and.push({ returnVal: { $ne: null } }, { cancelled: { $ne: true } }); break;
         }
+        if (hidden.size) and.push({ scriptId: { $nin: Array.from(hidden) } });
         if (filters.q) { var re = new RegExp(escapeRegex(filters.q), 'i'); and.push({ $or: [ { returnVal: { $regex: re } }, { errorVal: { $regex: re } } ] }); }
         if (and.length == 0) delete find.$and; // MongoDB rejects an empty $and
         var results = await Promise.all([ obj.db.countJobs(find), obj.db.findJobs(find, { completeTime: -1 }, p.skip, p.limit) ]);
@@ -1061,6 +1108,7 @@ module.exports.scripttask = function (parent) {
     // One job in full (for the output viewer): managers for devices they can see, or users who can run scripts on its device
     obj.rpc.job = async function(args, session) {
         var job = await getOne(args.id, 'job');
+        await obj.assertVisibleScript(session, job.scriptId);
         if ((await obj.hasPerm(session.user, 'manage')) && (await obj.visibleNodes(session)).has(job.node)) return job;
         await obj.requireNode(session, job.node);
         return job;
@@ -1068,11 +1116,11 @@ module.exports.scripttask = function (parent) {
 
     obj.rpc.cancelJobs = async function(args, session) {
         await obj.requireManage(session);
-        var visible = await obj.visibleNodes(session), done = 0, skipped = 0;
+        var visible = await obj.visibleNodes(session), hidden = await obj.hiddenScripts(session), done = 0, skipped = 0;
         for (var id of (Array.isArray(args.jobIds) ? args.jobIds : []).slice(0, 1000)) {
             var found = await obj.db.get(String(id));
             var job = found[0];
-            if (job == null || job.type != 'job' || job.completeTime != null || !visible.has(job.node)) { skipped++; continue; }
+            if (job == null || job.type != 'job' || job.completeTime != null || !visible.has(job.node) || hidden.has(String(job.scriptId))) { skipped++; continue; }
             await obj.cancelJobDoc(job, session.user.name);
             done++;
         }
@@ -1082,11 +1130,11 @@ module.exports.scripttask = function (parent) {
     // Start queued or scheduled runs now instead of at their due time. Runs already sent are left alone.
     obj.rpc.runJobsNow = async function(args, session) {
         await obj.requireManage(session);
-        var visible = await obj.visibleNodes(session), done = 0, skipped = 0, now = Math.floor(Date.now() / 1000), nodes = [];
+        var visible = await obj.visibleNodes(session), hidden = await obj.hiddenScripts(session), done = 0, skipped = 0, now = Math.floor(Date.now() / 1000), nodes = [];
         for (var id of (Array.isArray(args.jobIds) ? args.jobIds : []).slice(0, 1000)) {
             var found = await obj.db.get(String(id));
             var job = found[0];
-            if (job == null || job.type != 'job' || job.completeTime != null || job.dispatchTime != null || !visible.has(job.node)) { skipped++; continue; }
+            if (job == null || job.type != 'job' || job.completeTime != null || job.dispatchTime != null || !visible.has(job.node) || hidden.has(String(job.scriptId))) { skipped++; continue; }
             var update = { dontQueueUntil: now };
             if (job.expiresAt != null && job.expiresAt < now + 120) update.expiresAt = now + 120; // Don't let it expire before the queue gets to it
             await obj.db.update(job._id, update);
@@ -1100,11 +1148,11 @@ module.exports.scripttask = function (parent) {
     obj.rpc.scheduleAction = async function(args, session) {
         await obj.requireManage(session);
         if (['pause', 'resume', 'delete'].indexOf(args.action) === -1) throw new RpcError('Unknown action.');
-        var visible = await obj.visibleNodes(session), done = 0, skipped = 0;
+        var visible = await obj.visibleNodes(session), hidden = await obj.hiddenScripts(session), done = 0, skipped = 0;
         for (var id of (Array.isArray(args.scheduleIds) ? args.scheduleIds : []).slice(0, 1000)) {
             var found = await obj.db.get(String(id));
             var sched = found[0];
-            if (sched == null || sched.type != 'jobSchedule' || !visible.has(sched.node)) { skipped++; continue; }
+            if (sched == null || sched.type != 'jobSchedule' || !visible.has(sched.node) || hidden.has(String(sched.scriptId))) { skipped++; continue; }
             if (args.action == 'delete') await obj.deleteScheduleDoc(sched);
             else if ((args.action == 'pause') != (sched.paused === true)) await obj.pauseScheduleDoc(sched, args.action == 'pause');
             done++;
@@ -1207,7 +1255,8 @@ module.exports.scripttask = function (parent) {
         await obj.requireManage(session);
         await obj.getSettings();
         var p = page(args), now = Math.floor(Date.now() / 1000);
-        var results = await Promise.all([obj.db.countBatches(), obj.db.getBatches(p.skip, p.limit)]);
+        var hiddenIds = Array.from(await obj.hiddenScripts(session));
+        var results = await Promise.all([obj.db.countBatches(hiddenIds), obj.db.getBatches(p.skip, p.limit, hiddenIds)]);
         var batches = results[1];
         var visible = await obj.visibleNodes(session, [].concat.apply([], batches.map(function(b) { return b.nodeIds; })));
         var jobs = batches.length ? await obj.db.getJobsForBatches(batches.map(function(b) { return b.batchId; })) : [];
@@ -1228,7 +1277,7 @@ module.exports.scripttask = function (parent) {
         await obj.requireManage(session);
         await obj.getSettings();
         var batch = await obj.db.getBatch(String(args.batchId || ''));
-        if (batch == null) throw new RpcError('Batch not found.');
+        if (batch == null || (await obj.hiddenScripts(session)).has(String(batch.scriptId))) throw new RpcError('Batch not found.');
         var now = Math.floor(Date.now() / 1000);
         var visible = await obj.visibleNodes(session, batch.nodeIds);
         var jobs = (await obj.db.getJobsForBatches([batch.batchId])).filter(function(j) { return visible.has(j.node); });
@@ -1256,6 +1305,42 @@ module.exports.scripttask = function (parent) {
             missing: batch.nodeIds.filter(function(n) { return visible.has(n) && latest[n] == null; }) };
     };
 
+    // Devices of a list that exist in MeshCentral but that this user can't see (devices deleted from MeshCentral don't count)
+    obj.unseenDevices = async function(session, nodeIds) {
+        var visible = await obj.visibleNodes(session, nodeIds), out = [];
+        for (var n of nodeIds) {
+            if (visible.has(n)) continue;
+            var exists = await new Promise(function(resolve) { obj.meshServer.db.Get(n, function(err, docs) { resolve(docs != null && docs.length == 1); }); });
+            if (exists) out.push(n);
+        }
+        return out;
+    };
+
+    // Delete batches (managers). Their schedules are deleted and runs not yet sent are cancelled; runs already sent finish where they are.
+    // Finished runs stay in History without the batch, or are deleted with it (args.deleteRuns). A batch that includes devices the
+    // manager can't see is left alone, because deleting it would change schedules and runs on those devices.
+    obj.rpc.deleteBatches = async function(args, session) {
+        await obj.requireManage(session);
+        var ids = (Array.isArray(args.batchIds) ? args.batchIds : []).slice(0, 100).map(function(b) { return String(b); });
+        if (ids.length == 0) throw new RpcError('No batch given.');
+        var hidden = await obj.hiddenScripts(session), done = 0, skipped = 0, reason = null;
+        for (var bid of ids) {
+            var batch = await obj.db.getBatch(bid);
+            if (batch == null || hidden.has(String(batch.scriptId))) { skipped++; reason = reason || 'Batch not found. It may have been deleted.'; continue; }
+            var unseen = await obj.unseenDevices(session, batch.nodeIds || []);
+            if (unseen.length) { skipped++; reason = reason || 'This batch includes ' + unseen.length + (unseen.length == 1 ? ' device' : ' devices') + ' you can\'t see, so you can\'t delete it.'; continue; }
+            var schedules = await obj.db.getSchedulesForBatch(batch.batchId);
+            for (var sc of schedules) await obj.deleteScheduleDoc(sc);
+            await obj.db.deleteUndispatchedJobsForBatch(batch.batchId);
+            if (args.deleteRuns === true) await obj.db.deleteFinishedJobsForBatch(batch.batchId);
+            await obj.db.detachJobsFromBatch(batch.batchId);
+            await obj.db.delete(batch._id);
+            obj.invalidate({ nodeIds: batch.nodeIds || [], scriptIds: [batch.scriptId] });
+            done++;
+        }
+        return { done: done, skipped: skipped, reason: reason };
+    };
+
     obj.rpc.targetSets = async function(args, session) {
         await obj.requireManage(session);
         return obj.db.getTargetSets(session.user._id);
@@ -1279,12 +1364,12 @@ module.exports.scripttask = function (parent) {
 
     obj.rpc.getScript = async function(args, session) {
         await obj.requireManage(session);
-        return getOne(args.id, 'script');
+        return getOne(args.id, 'script', session);
     };
 
     obj.rpc.scriptData = async function(args, session) {
         await obj.requireManage(session);
-        var script = await getOne(args.scriptId, 'script');
+        var script = await getOne(args.scriptId, 'script', session);
         var results = await Promise.all([obj.db.getJobScriptHistory(script._id), obj.db.getJobSchedulesForScript(script._id)]);
         return { history: results[0], schedules: results[1] };
     };
@@ -1293,15 +1378,16 @@ module.exports.scripttask = function (parent) {
         await obj.requireManage(session);
         if (FILE_TYPES.indexOf(args.filetype) === -1) throw new RpcError('Scripts must be PowerShell (.ps1), Batch (.bat) or Bash.');
         if (typeof args.content != 'string' || args.content.length > 4 * 1024 * 1024) throw new RpcError('Script content is missing or larger than 4 MB.');
-        var path = await folderPath(args.folderId);
+        var path = await folderPath(args.folderId, session);
         var r = await obj.db.addScript(name(args.name), args.content, path, args.filetype);
+        obj.resetPrivateCache();
         obj.invalidate({ library: true });
         return { id: r.insertedId };
     };
 
     obj.rpc.saveScript = async function(args, session) {
         await obj.requireManage(session);
-        var script = await getOne(args.id, 'script');
+        var script = await getOne(args.id, 'script', session);
         var filetype = (args.filetype != null) ? args.filetype : script.filetype;
         if (FILE_TYPES.indexOf(filetype) === -1) throw new RpcError('Unknown script type.');
         if (typeof args.content != 'string' || args.content.length > 4 * 1024 * 1024) throw new RpcError('Script content is missing or larger than 4 MB.');
@@ -1314,7 +1400,7 @@ module.exports.scripttask = function (parent) {
 
     obj.rpc.newFolder = async function(args, session) {
         await obj.requireManage(session);
-        var parentPath = await folderPath(args.parentId);
+        var parentPath = await folderPath(args.parentId, session);
         var folderName = name(args.name);
         await obj.db.addFolder(folderName, parentPath + '/' + folderName);
         obj.invalidate({ library: true });
@@ -1323,10 +1409,10 @@ module.exports.scripttask = function (parent) {
 
     obj.rpc.rename = async function(args, session) {
         await obj.requireManage(session);
-        var item = await getOne(args.id);
+        var item = await getOne(args.id, null, session);
         var newName = name(args.name);
         if (item.type == 'folder') {
-            if (item.path == 'Shared') throw new RpcError('The top-level Shared folder can\'t be renamed.');
+            if (item.path == 'Shared' || item.path == PRIVATE_ROOT) throw new RpcError('The top-level folders can\'t be renamed.');
             var newPath = item.path.substring(0, item.path.length - item.name.length) + newName;
             await obj.db.rebasePath(item.path, newPath);
         } else if (item.type == 'script') {
@@ -1339,10 +1425,11 @@ module.exports.scripttask = function (parent) {
 
     obj.rpc.move = async function(args, session) {
         await obj.requireManage(session);
-        var item = await getOne(args.id);
-        var target = await getOne(args.toId, 'folder');
+        var item = await getOne(args.id, null, session);
+        var target = await getOne(args.toId, 'folder', session);
+        if (isPrivatePath(item.path) != isPrivatePath(target.path)) throw new RpcError('Private scripts stay in the Private folder, and nothing can be moved into it. Create or upload the script there instead.');
         if (item.type == 'folder') {
-            if (item.path == 'Shared') throw new RpcError('The top-level Shared folder can\'t be moved.');
+            if (item.path == 'Shared' || item.path == PRIVATE_ROOT) throw new RpcError('The top-level folders can\'t be moved.');
             if (target.path == item.path || target.path.indexOf(item.path + '/') === 0) throw new RpcError('A folder can\'t be moved into itself.');
             await obj.db.rebasePath(item.path, target.path + '/' + item.name);
         } else if (item.type == 'script') {
@@ -1354,10 +1441,10 @@ module.exports.scripttask = function (parent) {
 
     obj.rpc.deleteItem = async function(args, session) {
         await obj.requireManage(session);
-        var item = await getOne(args.id);
+        var item = await getOne(args.id, null, session);
         var scripts = [];
         if (item.type == 'folder') {
-            if (item.path == 'Shared') throw new RpcError('The top-level Shared folder can\'t be deleted.');
+            if (item.path == 'Shared' || item.path == PRIVATE_ROOT) throw new RpcError('The top-level folders can\'t be deleted.');
             var contents = await obj.db.getByPathPrefix(item.path);
             scripts = contents.filter(function(i) { return i.type == 'script'; });
             for (var c of contents) await obj.db.delete(c._id);
@@ -1371,6 +1458,7 @@ module.exports.scripttask = function (parent) {
             await obj.db.deleteSchedulesForScript(s._id);
             await obj.db.deleteVariablesForScript(s._id);
         }
+        obj.resetPrivateCache();
         obj.invalidate({ library: true, variables: true, scriptIds: scripts.map(function(s) { return s._id; }) });
         return true;
     };
@@ -1403,13 +1491,15 @@ module.exports.scripttask = function (parent) {
     async function checkVarTarget(session, v, newTarget) {
         if (v.scope == 'mesh' && !obj.canSeeMesh(session, v.scopeTarget)) throw new RpcError('Device group not found.');
         if (v.scope == 'node' && !(await obj.canSeeNode(session, v.scopeTarget))) throw new RpcError('Device not found.');
-        if (v.scope == 'script' && newTarget) await getOne(v.scopeTarget, 'script');
+        if (v.scope == 'script' && (await obj.hiddenScripts(session)).has(String(v.scopeTarget))) throw new RpcError('Not found. It may have been deleted.');
+        if (v.scope == 'script' && newTarget) await getOne(v.scopeTarget, 'script', session);
     }
 
     obj.rpc.variables = async function(args, session) {
         await obj.requireManage(session);
-        var vars = await obj.db.getVariables(), out = [], nodeSeen = {};
+        var vars = await obj.db.getVariables(), out = [], nodeSeen = {}, hidden = await obj.hiddenScripts(session);
         for (var v of vars) {
+            if (v.scope == 'script' && hidden.has(String(v.scopeTarget))) continue; // Variables of private scripts
             if (v.scope == 'mesh' && !obj.canSeeMesh(session, v.scopeTarget)) continue;
             if (v.scope == 'node') {
                 if (nodeSeen[v.scopeTarget] == null) nodeSeen[v.scopeTarget] = await obj.canSeeNode(session, v.scopeTarget);
@@ -1429,8 +1519,9 @@ module.exports.scripttask = function (parent) {
     // Which library scripts use each variable name, as #name#
     obj.rpc.varUsage = async function(args, session) {
         await obj.requireManage(session);
-        var usage = {}, re = /#([A-Za-z0-9_:.\-]+)#/g, m;
+        var hidden = await obj.hiddenScripts(session), usage = {}, re = /#([A-Za-z0-9_:.\-]+)#/g, m;
         (await obj.db.getScriptContents()).forEach(function(sc) {
+            if (hidden.has(String(sc._id))) return;
             var seen = {};
             re.lastIndex = 0;
             while ((m = re.exec(sc.content || '')) != null) {
@@ -1476,12 +1567,12 @@ module.exports.scripttask = function (parent) {
         await obj.requireManage(session);
         var settings = await obj.getSettings();
         var now = Math.floor(Date.now() / 1000), since = now - 86400;
-        var visible = await obj.visibleNodes(session), nodes = Array.from(visible);
-        var queue = (await obj.db.getAllIncompleteJobs()).filter(function(j) { return visible.has(j.node); });
+        var visible = await obj.visibleNodes(session), nodes = Array.from(visible), hidden = await obj.hiddenScripts(session), hiddenIds = Array.from(hidden);
+        var queue = (await obj.db.getAllIncompleteJobs()).filter(function(j) { return visible.has(j.node) && !hidden.has(String(j.scriptId)); });
         var counts = { queued: 0, waiting: 0, scheduled: 0, dispatched: 0, stale: 0, missed: 0 };
         queue.forEach(function(j) { j.state = queueStatus(j, now); counts[j.state]++; });
         // The last 24 hours, narrowed by completeTime first
-        var recent = function(extra) { var q = jobQuery(nodes, { $gte: since }); q.$and = q.$and.concat(extra); return q; };
+        var recent = function(extra) { var q = jobQuery(nodes, { $gte: since }); q.$and = q.$and.concat(extra); if (hiddenIds.length) q.$and.push({ scriptId: { $nin: hiddenIds } }); return q; };
         var isFailed = [ { errorVal: { $ne: null } }, { returnVal: null }, { missed: { $ne: true } }, { cancelled: { $ne: true } } ];
         var failed = recent(isFailed), missed = recent([ { missed: true } ]);
         var completed = recent([ { returnVal: { $ne: null } }, { cancelled: { $ne: true } } ]);
@@ -1490,7 +1581,7 @@ module.exports.scripttask = function (parent) {
             obj.db.findJobs(recent([ { $or: [ { $and: isFailed }, { missed: true } ] } ]), { completeTime: -1 }, 0, 8),
             obj.db.getAllSchedules()
         ]);
-        var schedules = r[4].filter(function(s) { return visible.has(s.node); });
+        var schedules = r[4].filter(function(s) { return visible.has(s.node) && !hidden.has(String(s.scriptId)); });
         var trim = function(j) {
             ['returnVal', 'errorVal'].forEach(function(k) { if (typeof j[k] == 'string' && j[k].length > 300) j[k] = j[k].substring(0, 300); });
             return j;
@@ -1516,7 +1607,7 @@ module.exports.scripttask = function (parent) {
         init: 'open',
         tree: 'node', nodeData: 'node', runScript: 'node', addSchedule: 'node', cancelJob: 'node', deleteSchedule: 'node', updateSchedule: 'node', pauseSchedule: 'node', job: 'node',
         cancelAllPending: 'manage', queue: 'manage', schedules: 'manage', history: 'manage', cancelJobs: 'manage', runJobsNow: 'manage', scheduleAction: 'manage', updateSchedules: 'manage', saveSettings: 'manage',
-        batches: 'manage', batch: 'manage', targetSets: 'manage', saveTargetSet: 'manage', deleteTargetSet: 'manage',
+        batches: 'manage', batch: 'manage', deleteBatches: 'manage', targetSets: 'manage', saveTargetSet: 'manage', deleteTargetSet: 'manage',
         getScript: 'manage', scriptData: 'manage', addScript: 'manage', saveScript: 'manage', newFolder: 'manage', rename: 'manage', move: 'manage', deleteItem: 'manage',
         variables: 'manage', revealVar: 'manage', varUsage: 'manage', addVar: 'manage', editVar: 'manage', deleteVar: 'manage', overview: 'manage'
     };

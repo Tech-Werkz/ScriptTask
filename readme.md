@@ -30,6 +30,14 @@ Then enable the plugin, and **restart MeshCentral**.
 
 **Switching from the original plugin:** both use the plugin name `scripttask` and the same database (`plugin-scripttask.db` in `meshcentral-data` for NeDB, or the `plugin_scripttask` collection for MongoDB), so scripts, schedules, history and variables carry over. Back up your data first, remove the original plugin, install this one, then restart MeshCentral. Permissions are not carried over: the original plugin had none, so nobody can use this one until you grant a permission (see Permissions). The original plugin can't detect the change, so the restart is required here. Existing schedules keep working as before: they run when an offline device reconnects, on their original timetable.
 
+## Private scripts
+
+The library has a **Private** folder next to Shared, created the first time a full administrator opens the library. Only MeshCentral **full administrators** who are also allowed in ScriptTask (Manage ScriptTask, or Run scripts on the device) can see it. Nobody else sees the folder, its scripts, or anything about them: their runs, schedules, batches and history, their output, and the variables set for them are all left out of every list and every request for everyone else, managers included. The Overview counts leave them out too, and a script's download and its `#variables#` usage are refused for others.
+
+Private scripts can't be shared by accident: nothing can be moved out of Private, and nothing can be moved into it. To make a private script, create or upload it inside Private. To share one, copy its text into a new script in Shared. The Private folder itself can't be renamed, moved or deleted. A user who stops being a full administrator stops seeing Private at once, and the scripts stay where they are.
+
+Private is not encryption: a script's text is stored like any other script, and it is sent to a device when it runs there. Variables used by a private script keep their own scopes (global, device group and device variables are shared with everyone who can see them).
+
 ## Where to find it
 
 - **ScriptTask page** (for ScriptTask managers): **My Server > Plugins > ScriptTask**, or **Open ScriptTask** on any device's ScriptTask tab.
@@ -50,6 +58,10 @@ Running a script on a device also needs that device's **Remote Commands** right,
 
 If a permission check fails for any reason (an error, a missing or unexpected answer), the user is refused.
 
+### Deleting batches
+
+**Delete** on a batch removes it from Batches. Runs that haven't been sent to a device are cancelled, and the schedules of a scheduled batch are deleted. Runs already sent finish where they are. Finished runs stay in History without the batch, unless you tick **Also delete the finished runs from History**. A batch that includes a device you can't see in MeshCentral is left alone, because deleting it would change schedules and runs on that device (devices deleted from MeshCentral don't count).
+
 ### What the permissions can and can't enforce
 
 - **Enforced on the server:** every request the ScriptTask pages send (library, variables, runs, schedules, history, settings, the script download) is checked on the server before it runs, so hiding or showing parts of the page is not what protects anything. Someone with no ScriptTask permission also gets no settings back from the plugin's start-up request.
@@ -68,9 +80,9 @@ Users can cancel their own pending runs and change or delete their own schedules
 | Section | What it does |
 |---|---|
 | **Overview** | Queue counts, errors, missed and completed runs in the last 24 hours, runs that need attention, what runs next, and recent batches. |
-| **Library** | Folder tree (drag to move, drop files to upload) and, for each script, a code editor plus its schedules, history and variables. |
-| **Run** | Pick a script and devices (search, device group, tag, OS, online status, saved device sets), then run now or schedule. |
-| **Batches** | Runs on several devices, with devices grouped by identical output, CSV export, and Run again on failed devices. |
+| **Library** | Folder tree (drag to move, drop files to upload) and, for each script, a code editor plus its schedules, history and variables. Full administrators also have a **Private** folder (see below). |
+| **Run** | Pick a script and devices (search, device groups and tags with checkboxes so you can choose several, OS, online status, saved device sets), then run now or schedule. Several groups match devices in any of them. Several tags match devices with any of them, or with all of them if you choose **All**. |
+| **Batches** | Runs on several devices, with devices grouped by identical output, CSV export, and Run again on failed devices. Delete a batch from its page, or tick several in the list and choose Delete. |
 | **Queue** | Every pending run, with filters and bulk cancel or run now. |
 | **Schedules** | Every schedule, soonest first, with bulk edit, pause, resume and delete. Select schedules and choose Edit to give them all one new timetable. |
 | **History** | Every finished run, searchable by output, with the full output on click. |

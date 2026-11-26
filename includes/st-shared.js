@@ -123,6 +123,47 @@
         </div>`;
     }
 
+    // A dropdown for choosing several values with checkboxes.
+    // props: options [[value, label, count?], ...], value (array of chosen values), onChange(array), label (shown when nothing is chosen),
+    // noun (for "3 groups selected"), ariaLabel, footer (extra controls in the menu)
+    function MultiSelect(props) {
+        var open = useState(false), q = useState('');
+        var root = useRef(null);
+        var chosen = props.value || [], options = props.options || [];
+        useEffect(function () {
+            if (!open[0]) return;
+            var onDown = function (e) { if (root.current && !root.current.contains(e.target)) open[1](false); };
+            var onKey = function (e) { if (e.key == 'Escape') { open[1](false); var b = root.current && root.current.querySelector('button'); if (b) b.focus(); } };
+            document.addEventListener('mousedown', onDown); document.addEventListener('keydown', onKey);
+            return function () { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+        }, [open[0]]);
+        var query = q[0].trim().toLowerCase();
+        var shown = options.filter(function (o) { return !query || String(o[1]).toLowerCase().indexOf(query) >= 0; });
+        var toggle = function (v) { props.onChange(chosen.indexOf(v) >= 0 ? chosen.filter(function (x) { return x != v; }) : chosen.concat([v])); };
+        var first = options.find(function (o) { return o[0] == chosen[0]; });
+        var summary = chosen.length == 0 ? props.label : chosen.length == 1 ? (first ? first[1] : chosen[0]) : chosen.length + ' ' + props.noun + ' selected';
+        return html`<div class="st-multi" ref=${root}>
+            <button type="button" class=${'form-select form-select-sm st-multi-btn' + (chosen.length ? ' st-multi-active' : '')} aria-haspopup="true" aria-expanded=${open[0]} aria-label=${props.ariaLabel}
+                title=${chosen.length > 1 ? options.filter(function (o) { return chosen.indexOf(o[0]) >= 0; }).map(function (o) { return o[1]; }).join(', ') : ''} onClick=${function () { open[1](!open[0]); }}>
+                <span class="st-multi-summary">${summary}</span>
+            </button>
+            ${open[0] ? html`<div class="st-multi-menu" role="group" aria-label=${props.ariaLabel}>
+                ${options.length > 8 ? html`<div class="p-2 pb-1"><input type="search" class="form-control form-control-sm" placeholder="Search" aria-label=${'Search ' + props.ariaLabel.toLowerCase()} value=${q[0]} onInput=${function (e) { q[1](e.target.value); }} /></div>` : null}
+                <div class="st-multi-list">
+                    ${shown.length == 0 ? html`<div class="st-combo-empty">None match.</div>` : shown.map(function (o) {
+                        return html`<label class="st-multi-option" key=${o[0]}>
+                            <input class="form-check-input mt-0" type="checkbox" checked=${chosen.indexOf(o[0]) >= 0} onChange=${function () { toggle(o[0]); }} />
+                            <span class="st-combo-name">${o[1]}</span>${o[2] != null ? html`<span class="text-body-secondary small">${o[2]}</span>` : null}
+                        </label>`; })}
+                </div>
+                <div class="st-multi-foot">
+                    <span>${props.footer}</span>
+                    <button type="button" class="btn btn-sm btn-link p-0" disabled=${chosen.length == 0} onClick=${function () { props.onChange([]); }}>Clear</button>
+                </div>
+            </div>` : null}
+        </div>`;
+    }
+
     function detectType(fileName, content) {
         var ext = fileName.split('.').pop().toLowerCase();
         if (ext == 'ps1') return 'ps1';
@@ -142,7 +183,8 @@
         items.forEach(function (i) { if (i.type == 'script') { if (folders[i.path]) folders[i.path].scripts.push(i); else orphans.push(i); } });
         var byName = function (a, b) { return (a.item || a).name.localeCompare((b.item || b).name); };
         Object.keys(folders).forEach(function (p) { folders[p].folders.sort(byName); folders[p].scripts.sort(byName); });
-        roots.sort(byName);
+        var rootRank = function (f) { return f.item.path == 'Shared' ? 0 : f.item.path == 'Private' ? 2 : 1; };
+        roots.sort(function (a, b) { return (rootRank(a) - rootRank(b)) || byName(a, b); });
         return { roots: roots, orphans: orphans.sort(byName) };
     }
 
@@ -158,12 +200,13 @@
             onDrop: function (e) { e.preventDefault(); e.stopPropagation(); over[1](false); props.onDrop(e, item); }
         } : {};
         return html`<li>
-            <div class=${'st-tree-row' + (props.selId == item._id ? ' st-selected' : '') + (over[0] ? ' st-drop-target' : '')} draggable=${props.manage && item.path != 'Shared'}
+            <div class=${'st-tree-row' + (props.selId == item._id ? ' st-selected' : '') + (over[0] ? ' st-drop-target' : '')} draggable=${props.manage && item.path != 'Shared' && item.path != 'Private'}
                 onDragStart=${function (e) { e.dataTransfer.setData('application/x-scripttask-item', item._id); }}
                 onClick=${function () { props.onSelect(item); props.onToggle(item.path); }} ...${drop} title=${item.path}>
                 <span class="st-tree-chevron"><${ST.Icon} name=${collapsed ? 'chevron-right' : 'chevron-down'} /></span>
                 <${ST.Icon} name=${collapsed ? 'folder2' : 'folder2-open'} class="st-folder-icon" />
                 <span class="st-tree-name">${item.name}</span>
+                ${item.path == 'Private' ? html`<span class="ms-1 text-body-secondary" title="Only full administrators can see this folder"><${ST.Icon} name="lock" /></span>` : null}
             </div>
             ${collapsed ? null : html`<ul>
                 ${f.folders.map(function (c) { return html`<${TreeFolder} key=${c.item._id} ...${props} folder=${c} />`; })}
@@ -228,7 +271,7 @@
                     ${tree.roots.map(function (f) { return html`<${TreeFolder} key=${f.item._id} folder=${f} selId=${props.selId} onSelect=${props.onSelect} collapsed=${props.collapsed} onToggle=${props.onToggle} manage=${props.manage} onDrop=${onDrop} compat=${props.compat} />`; })}
                     ${tree.orphans.map(function (s) { return html`<${TreeScript} key=${s._id} script=${s} selId=${props.selId} onSelect=${props.onSelect} manage=${props.manage} compat=${props.compat} />`; })}
                 </ul>`}
-                ${props.manage && props.items != null && items.length <= 1 ? html`<div class="form-text mt-2">Drop .ps1, .bat or .sh files here to add them.</div>` : null}
+                ${props.manage && props.items != null && !items.some(function (i) { return i.type == 'script'; }) ? html`<div class="form-text mt-2">Drop .ps1, .bat or .sh files here to add them.</div>` : null}
                 ${props.footer ? html`<hr class="my-2" />${props.footer}` : null}
             </div>
         </div>`;
@@ -356,7 +399,7 @@
     var SCOPE_LABEL = { global: 'Global', script: 'Script', mesh: 'Device group', node: 'Device' };
 
     Object.assign(S, {
-        store: store, nodeName: nodeName, meshName: meshName, isWindows: isWindows, compatibility: compatibility, ScriptPicker: ScriptPicker, detectType: detectType, buildTree: buildTree,
+        store: store, nodeName: nodeName, meshName: meshName, isWindows: isWindows, compatibility: compatibility, ScriptPicker: ScriptPicker, MultiSelect: MultiSelect, detectType: detectType, buildTree: buildTree,
         Library: Library, ShowMore: ShowMore, sortSchedules: sortSchedules, ScheduleTable: ScheduleTable, scheduleActions: scheduleActions,
         HistoryTable: HistoryTable, NewScriptDialog: NewScriptDialog, VarValue: VarValue, SCOPE_ORDER: SCOPE_ORDER, SCOPE_LABEL: SCOPE_LABEL
     });

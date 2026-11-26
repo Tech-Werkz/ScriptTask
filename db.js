@@ -209,11 +209,30 @@ module.exports.CreateDB = function(meshserver) {
         obj.getBatch = function(batchId) {
             return obj.scriptFile.find( { type: 'batch', batchId: batchId } ).toArray().then((docs) => docs[0] || null);
         };
-        obj.getBatches = function(skip, limit) {
-            return obj.scriptFile.find( { type: 'batch', createdMs: { $gt: 0 } } ).sort( { createdMs: -1 } ).skip(skip || 0).limit(limit || 20).toArray();
+        // hiddenScriptIds: batches of these scripts are left out (private scripts, for users who may not see them)
+        function batchFind(hiddenScriptIds) {
+            var find = { type: 'batch', createdMs: { $gt: 0 } };
+            if (Array.isArray(hiddenScriptIds) && hiddenScriptIds.length) find.scriptId = { $nin: hiddenScriptIds };
+            return find;
+        }
+        obj.getBatches = function(skip, limit, hiddenScriptIds) {
+            return obj.scriptFile.find( batchFind(hiddenScriptIds) ).sort( { createdMs: -1 } ).skip(skip || 0).limit(limit || 20).toArray();
         };
-        obj.countBatches = function() {
-            return obj.scriptFile.countDocuments( { type: 'batch', createdMs: { $gt: 0 } } );
+        obj.countBatches = function(hiddenScriptIds) {
+            return obj.scriptFile.countDocuments( batchFind(hiddenScriptIds) );
+        };
+        // Taking a batch apart: its schedules, its runs, and the runs that stay in History without it
+        obj.getSchedulesForBatch = function(batchId) {
+            return obj.scriptFile.find( { type: 'jobSchedule', batchId: String(batchId) } ).toArray();
+        };
+        obj.deleteUndispatchedJobsForBatch = function(batchId) {
+            return obj.scriptFile.deleteMany( { type: 'job', batchId: String(batchId), completeTime: null, dispatchTime: null } );
+        };
+        obj.deleteFinishedJobsForBatch = function(batchId) {
+            return obj.scriptFile.deleteMany( { type: 'job', batchId: String(batchId), completeTime: { $gt: 0 } } );
+        };
+        obj.detachJobsFromBatch = function(batchId) {
+            return obj.scriptFile.updateMany( { type: 'job', batchId: String(batchId) }, { $set: { batchId: null } } );
         };
         obj.getJobsForBatches = function(batchIds) {
             return obj.scriptFile.find( { type: 'job', batchId: { $in: batchIds } } ).toArray();
@@ -308,7 +327,7 @@ module.exports.CreateDB = function(meshserver) {
             return obj.scriptFile.deleteMany( { type: 'variable', scope: 'script', scopeTarget: String(scriptId) } );
         };
         obj.getScriptContents = function() {
-            return obj.scriptFile.find( { type: 'script' } ).project( { name: 1, content: 1 } ).toArray();
+            return obj.scriptFile.find( { type: 'script' } ).project( { name: 1, content: 1, path: 1 } ).toArray();
         };
         obj.addVariable = function(name, scope, scopeTarget, value) {
             var vObj = { 
