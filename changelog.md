@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/dduval-sgo/MeshCentral-ScriptTask/issues) if you find anything.
 
+## [1.2.1] - 2026-11-27
+### Fixed
+- The device's ScriptTask tab is hidden for a user who has no ScriptTask permission on that device. Before, the tab was added for everyone and could only be hidden afterwards, which didn't work in MeshCentral 1.3.1's page. Now the page asks the server first and adds the tab only for a user who may use it, so the Plugins tab doesn't appear at all if ScriptTask is the only plugin. The answer is remembered for 5 minutes (yes) or 1 minute (no), and the tab's page is still refused by the server without a permission.
+
 ## [1.2.0] - 2026-11-26
 ### Added
 - **Private folder** in the Library, for scripts only full administrators can see. Everything about a private script (runs, schedules, batches, output, its variables, its download, its `#variables#` usage) is left out for everyone else, on the server, so hiding it in the page is not what protects it. Nothing can be moved into or out of Private, and the Private folder can't be renamed, moved or deleted.

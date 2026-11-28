@@ -41,7 +41,7 @@ Private is not encryption: a script's text is stored like any other script, and 
 ## Where to find it
 
 - **ScriptTask page** (for ScriptTask managers): **My Server > Plugins > ScriptTask**, or **Open ScriptTask** on any device's ScriptTask tab.
-- **Device tab**: each device's **Plugins** tab has a ScriptTask section to run and schedule library scripts on that device, with its queue and history.
+- **Device tab**: each device's **Plugins** tab has a ScriptTask section to run and schedule library scripts on that device, with its queue and history. It appears only for users who may use ScriptTask on that device (see Permissions).
 
 ## Permissions
 
@@ -65,7 +65,7 @@ If a permission check fails for any reason (an error, a missing or unexpected an
 ### What the permissions can and can't enforce
 
 - **Enforced on the server:** every request the ScriptTask pages send (library, variables, runs, schedules, history, settings, the script download) is checked on the server before it runs, so hiding or showing parts of the page is not what protects anything. Someone with no ScriptTask permission also gets no settings back from the plugin's start-up request.
-- **Pages and files are served only to allowed users.** The device tab's page is refused (and the tab hidden, where MeshCentral's page lets ScriptTask do that) unless the user has the **Run scripts** permission on that device and its Remote Commands right, or is a manager who can see the device. The ScriptTask page needs **Manage ScriptTask**. The page's scripts and styles are sent only to a user who has passed one of those checks in the last 8 hours (the time is renewed by each permitted request).
+- **Pages and files are served only to allowed users.** A device's ScriptTask tab is added only for a user who has the **Run scripts** permission on that device and its Remote Commands right, or is a manager who can see the device: the page asks the server first, so everyone else gets no ScriptTask tab, and no Plugins tab at all if ScriptTask is the only plugin. A yes is remembered by the page for 5 minutes and a no for 1 minute, so a newly granted permission shows up within a minute. The server decides again when the tab's page is requested, so a remembered yes can't open anything the user may not use. The ScriptTask page needs **Manage ScriptTask**. The page's scripts and styles are sent only to a user who has passed one of those checks in the last 8 hours (the time is renewed by each permitted request).
 - **Change notices** (which device, script or setting changed, with no content) go only to signed-in users who passed a ScriptTask check in the last 8 hours, and for a device only if they can see it. Someone whose permission was just removed can keep receiving these notices (ids only, no data) until they next use the plugin or the 8 hours pass; every request they make is refused at once.
 - **Outside ScriptTask:** anything a user can do directly with MeshCentral (its own Console and Run commands, terminal and file access on a device they have rights to) does not pass through this plugin and is controlled by MeshCentral's device rights, not by these permissions.
 - **Changes take effect on the next request.** A grant works without restarting MeshCentral, and a revoke stops the next request from that user. A page that is already open keeps showing what it loaded until it asks again.

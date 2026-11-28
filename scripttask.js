@@ -48,7 +48,7 @@ module.exports.scripttask = function (parent) {
         'getBus',
         'onRpcResult',
         'onInvalidate',
-        'setTabVisible'
+        'hideTab'
     ];
 
     const MESHRIGHT_REMOTECOMMAND = 0x00020000;
@@ -102,24 +102,46 @@ module.exports.scripttask = function (parent) {
 
     // ---- Client-side exports (serialized into the MeshCentral web UI's pluginHandler) ----
 
-    obj.onDeviceRefreshEnd = function() {
-        pluginHandler.registerPluginTab({
-            tabTitle: 'ScriptTask',
-            tabId: 'pluginScriptTask'
-        });
-        pluginHandler.scripttask.setTabVisible(true);
-        // The server checks the user's ScriptTask permission for this device when the page is requested, and refuses it (and hides the tab) without one
-        var nodeId = (typeof currentNode == 'object' && currentNode != null && typeof currentNode._id == 'string') ? currentNode._id : '';
-        QA('pluginScriptTask', '<iframe id="pluginIframeScriptTask" style="width: 100%; height: calc(100vh - 260px); min-height: 480px; border: 0; display: block; overflow: auto;" scrolling="auto" frameBorder=0 src="/pluginadmin.ashx?pin=scripttask&user=1&nodeid=' + encodeURIComponent(nodeId) + '" />');
+    // MeshCentral clears the device's plugin tabs and calls this each time the device page refreshes (nodeid is the device's id).
+    // ScriptTask's tab is added only for a user the server says may use ScriptTask on this device, so everyone else gets no tab,
+    // and no Plugins tab at all if ScriptTask was the only plugin. The answer is remembered here: 5 minutes for yes, 1 minute for no.
+    // (The server decides again when the tab's page is requested, so a remembered yes can't open anything the user may not use.)
+    obj.onDeviceRefreshEnd = function(nodeid, panel, refresh, event) {
+        if (typeof nodeid != 'string') return;
+        var known = (window.scripttaskTabAccess = window.scripttaskTabAccess || {})[nodeid];
+        var addTab = function() {
+            pluginHandler.registerPluginTab({ tabTitle: 'ScriptTask', tabId: 'pluginScriptTask' });
+            if (Q('pluginIframeScriptTask') == null) QA('pluginScriptTask', '<iframe id="pluginIframeScriptTask" style="width: 100%; height: calc(100vh - 260px); min-height: 480px; border: 0; display: block; overflow: auto;" scrolling="auto" frameBorder=0 src="/pluginadmin.ashx?pin=scripttask&user=1&nodeid=' + encodeURIComponent(nodeid) + '" />');
+        };
+        window.scripttaskTabReq = null; // Any answer still on its way is for an earlier refresh
+        if (known != null && known.until > Date.now()) { if (known.show) addTab(); return; } // MeshCentral selects the user's last plugin tab right after this
+        var bus = pluginHandler.scripttask.getBus(), timer = null;
+        var reqId = 'sttab' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+        window.scripttaskTabReq = reqId;
+        var onReply = function(type, msg) {
+            if (type != 'rpc' || msg.reqId != reqId) return;
+            bus.off(onReply); clearTimeout(timer);
+            var show = msg.ok === true && msg.data != null && msg.data.show === true;
+            if (msg.ok === true) window.scripttaskTabAccess[nodeid] = { show: show, until: Date.now() + (show ? 300000 : 60000) };
+            if (!show || window.scripttaskTabReq != reqId) return;
+            if (typeof currentNode == 'object' && currentNode != null && currentNode._id != nodeid) return; // The user has moved to another device
+            addTab();
+            var last = getstore('_curPluginPage', null); // What MeshCentral does after the hooks, for a tab that arrives late
+            if (last != null && Q('p19ph-' + last) != null) pluginHandler.callPluginPage(last, Q('p19ph-' + last));
+        };
+        timer = setTimeout(function() { bus.off(onReply); }, 20000);
+        bus.on(onReply);
+        meshserver.send({ action: 'plugin', plugin: 'scripttask', pluginaction: 'rpc', method: 'tabAccess', args: { nodeId: nodeid }, reqId: reqId });
     };
-    // Show or hide ScriptTask's tab header on the device page
-    obj.setTabVisible = function(visible) {
+    // Called by the refusal notice on the tab's page (a remembered yes that is no longer true): hide the tab's header
+    obj.hideTab = function(nodeid) {
         try {
-            var heads = Q('p19headers');
-            if (heads == null) return;
-            Array.prototype.forEach.call(heads.querySelectorAll('a'), function(a) { if ((a.textContent || '').trim() == 'ScriptTask') a.style.display = visible ? '' : 'none'; });
+            if (typeof nodeid == 'string') (window.scripttaskTabAccess = window.scripttaskTabAccess || {})[nodeid] = { show: false, until: Date.now() + 60000 };
+            var head = Q('p19ph-pluginScriptTask');
+            if (head != null) head.style.display = 'none';
         } catch (e) { }
     };
+
     // One message bus per top window, created in the top window's realm so it outlives any plugin iframe.
     // Plugin iframes subscribe to it; replies and change notices from the server are fanned out to them.
     obj.getBus = function() {
@@ -300,22 +322,31 @@ module.exports.scripttask = function (parent) {
     };
 
     // What a refused user sees. Fixed text only. On the device tab it also hides the tab's header.
-    obj.deniedPage = function(message, hideTab) {
-        return '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>ScriptTask</title></head><body style="margin:1rem;font-family:sans-serif;background:transparent;color:#888">' + message +
-            (hideTab ? '<script>try { window.parent.pluginHandler.scripttask.setTabVisible(false); } catch (e) { }</script>' : '') + '</body></html>';
+    obj.deniedPage = function(message, hideNodeId) {
+        var hide = '';
+        if (hideNodeId !== undefined) { // The device tab: tell MeshCentral's page to hide the tab (the id is only used if it looks like a device id)
+            var arg = (typeof hideNodeId == 'string' && /^[A-Za-z0-9@$_\/\-]{1,128}$/.test(hideNodeId)) ? JSON.stringify(hideNodeId) : '';
+            hide = '<script>try { window.parent.pluginHandler.scripttask.hideTab(' + arg + '); } catch (e) { }</script>';
+        }
+        return '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>ScriptTask</title></head><body style="margin:1rem;font-family:sans-serif;background:transparent;color:#888">' + message + hide + '</body></html>';
+    };
+
+    // Whether a user may use ScriptTask on a device: the "Run scripts" permission on it (and its Remote Commands right), or a manager who can see it.
+    // The device tab, its page and its requests all follow this.
+    obj.canUseDeviceTab = async function(session, nodeId) {
+        if (typeof nodeId != 'string' || nodeId.length == 0 || nodeId.length > 128 || session.domain == null) return false;
+        var caps = await obj.getNodeCaps(session, nodeId);
+        if (caps.node == null) return false;
+        return caps.run === true || (await obj.hasPerm(session.user, 'manage')) === true;
     };
 
     // The device tab's page: for users with the "Run scripts" permission on that device (and its Remote Commands right), or managers who can see it
     obj.serveDeviceShell = function(req, res, user) {
         var nodeId = req.query.nodeid;
-        var refuse = function() { if (!res.headersSent) res.status(403).send(obj.deniedPage('You don\'t have access to ScriptTask on this device.', true)); };
+        var refuse = function() { if (!res.headersSent) res.status(403).send(obj.deniedPage('You don\'t have access to ScriptTask on this device.', (typeof nodeId == 'string') ? nodeId : null)); };
         var domain = (obj.meshServer.config && obj.meshServer.config.domains) ? obj.meshServer.config.domains[user.domain] : null;
-        if (typeof nodeId != 'string' || nodeId.length == 0 || nodeId.length > 128 || domain == null) { refuse(); return; }
-        obj.getNodeCaps({ user: user, domain: domain }, nodeId)
-        .then(function(caps) {
-            if (caps.node == null) return false;
-            return caps.run ? true : obj.hasPerm(user, 'manage');
-        })
+        if (domain == null) { refuse(); return; }
+        obj.canUseDeviceTab({ user: user, domain: domain }, nodeId)
         .then(function(ok) {
             if (ok !== true) { refuse(); return; }
             obj.noteAccess(user, true);
@@ -334,9 +365,9 @@ module.exports.scripttask = function (parent) {
         // The ScriptTask page, opened from My Server > Plugins (MeshCentral's goPlugin sends no other parameters)
         obj.hasPerm(user, 'manage').then(function(ok) {
             obj.noteAccess(user, ok === true);
-            if (ok !== true) { res.status(403).send(obj.deniedPage('The ScriptTask page is for ScriptTask managers.', false)); return; }
+            if (ok !== true) { res.status(403).send(obj.deniedPage('The ScriptTask page is for ScriptTask managers.')); return; }
             res.render(obj.VIEWS + 'server', { version: obj.version });
-        }).catch(function() { if (!res.headersSent) res.status(403).send(obj.deniedPage('The ScriptTask page is for ScriptTask managers.', false)); });
+        }).catch(function() { if (!res.headersSent) res.status(403).send(obj.deniedPage('The ScriptTask page is for ScriptTask managers.')); });
     };
 
     // ---- Scheduling ----
@@ -767,6 +798,13 @@ module.exports.scripttask = function (parent) {
             return obj.db.getScriptTree();
         }
         return (await obj.db.getScriptTree()).filter(function(i) { return !isPrivatePath(i.path); });
+    };
+
+    // Does this user get ScriptTask's tab on this device? (the page asks before it adds the tab)
+    obj.rpc.tabAccess = async function(args, session) {
+        var show = await obj.canUseDeviceTab(session, args.nodeId);
+        if (show) obj.noteAccess(session.user, true);
+        return { show: show };
     };
 
     obj.rpc.nodeData = async function(args, session) {
@@ -1604,7 +1642,7 @@ module.exports.scripttask = function (parent) {
     // device and checks the "run" permission, the device's Remote Commands right and ownership. 'open': answers only
     // what the caller may do. A request that is not listed here is refused, so a new one can't go live ungated.
     obj.RPC_ACCESS = {
-        init: 'open',
+        init: 'open', tabAccess: 'open',
         tree: 'node', nodeData: 'node', runScript: 'node', addSchedule: 'node', cancelJob: 'node', deleteSchedule: 'node', updateSchedule: 'node', pauseSchedule: 'node', job: 'node',
         cancelAllPending: 'manage', queue: 'manage', schedules: 'manage', history: 'manage', cancelJobs: 'manage', runJobsNow: 'manage', scheduleAction: 'manage', updateSchedules: 'manage', saveSettings: 'manage',
         batches: 'manage', batch: 'manage', deleteBatches: 'manage', targetSets: 'manage', saveTargetSet: 'manage', deleteTargetSet: 'manage',
