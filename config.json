@@ -2,7 +2,7 @@
   "name": "ScriptTask",
   "shortName": "scripttask",
   "version": "1.2.1",
-  "author": "Desmond Duval (based on ScriptTask by Ryan Blenis)",
+  "author": "Ryan Blenis, fork from Desmond Duval, enhanced by Tech-Werkz",
   "description": "Script (PowerShell, BAT, Bash) runner for endpoints",
   "hasAdminPanel": true,
   "homepage": "https://github.com/Tech-Werkz/ScriptTask",
@@ -13,5 +13,5 @@
     "type": "git",
     "url": "https://github.com/Tech-Werkz/ScriptTask.git"
   },
-  "meshCentralCompat": ">=1.2.0"
+  "meshCentralCompat": ">=1.3.1"
 }
